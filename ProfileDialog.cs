@@ -26,13 +26,17 @@ public class ProfileDialog : Window
     readonly TextBox _urls = NewField();
     readonly List<Border> _swatches = new();
     readonly StackPanel _groupChips = new();
+    readonly StackPanel _nameChips = new();
+    readonly List<string> _existingNames;
     readonly Func<string, IReadOnlyList<string>>? _groupSites;
     int _selected;
 
     public ProfileDialog(Profile? existing = null, IReadOnlyList<string>? suggestions = null,
-                         Func<string, IReadOnlyList<string>>? groupSites = null)
+                         Func<string, IReadOnlyList<string>>? groupSites = null,
+                         IEnumerable<string>? existingNames = null)
     {
         _groupSites = groupSites;
+        _existingNames = (existingNames ?? new List<string>()).ToList();
         Title = existing == null ? "New profile" : "Edit profile";
         Width = 400;
         SizeToContent = SizeToContent.Height;
@@ -86,6 +90,7 @@ public class ProfileDialog : Window
         var panel = new StackPanel { Margin = new Thickness(18) };
         panel.Children.Add(Label("Name (e.g. client or hotel)", 0));
         panel.Children.Add(_name);
+        panel.Children.Add(_nameChips);
         panel.Children.Add(Label("Group (optional, e.g. hotel chain)", 12));
         panel.Children.Add(_group);
         panel.Children.Add(Label("Colour", 12));
@@ -100,9 +105,41 @@ public class ProfileDialog : Window
         panel.Children.Add(buttons);
         Content = panel;
 
-        _group.TextChanged += (_, _) => RebuildGroupChips();
+        _group.TextChanged += (_, _) => { RebuildGroupChips(); RebuildNameChips(); };
+        _urls.TextChanged += (_, _) => RebuildNameChips();
         RebuildGroupChips();
+        RebuildNameChips();
+        // A new profile starts with the best suggested name already filled in (selected, so typing replaces it).
+        if (existing == null && _name.Text == "" &&
+            NameSuggester.Suggest(_group.Text, HomeUrls, _existingNames).FirstOrDefault() is { } first)
+            _name.Text = first;
         Loaded += (_, _) => { _name.Focus(); _name.SelectAll(); };
+    }
+
+    // Suggested names from the group, the first home page and the names already used.
+    void RebuildNameChips()
+    {
+        _nameChips.Children.Clear();
+        var names = NameSuggester.Suggest(_group.Text, HomeUrls, _existingNames);
+        if (names.Count == 0) return;
+        var wrap = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) };
+        wrap.Children.Add(new TextBlock
+        {
+            Text = "Suggestions:", Foreground = new SolidColorBrush(Color.FromRgb(0x8A, 0x8D, 0x96)),
+            Margin = new Thickness(0, 3, 8, 0), FontSize = 11.5,
+        });
+        foreach (var name in names)
+        {
+            var chip = new Button
+            {
+                Content = name, Foreground = Fg, Padding = new Thickness(8, 2, 8, 2), Margin = new Thickness(0, 0, 6, 4),
+                Style = (Style)Application.Current.FindResource("Flat"),
+                Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x3B, 0x42)), FontSize = 12,
+            };
+            chip.Click += (_, _) => { _name.Text = name; _name.Focus(); _name.SelectAll(); };
+            wrap.Children.Add(chip);
+        }
+        _nameChips.Children.Add(wrap);
     }
 
     void RebuildGroupChips()

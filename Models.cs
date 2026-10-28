@@ -23,8 +23,12 @@ public class Profile : INotifyPropertyChanged
     public string Name
     {
         get => _name;
-        set { _name = value; Changed(nameof(Name)); }
+        set { _name = value; Changed(nameof(Name)); Changed(nameof(Initial)); }
     }
+
+    // First letter, shown in the coloured avatar in the profile list.
+    [JsonIgnore]
+    public string Initial => Name.Trim().Length > 0 ? char.ToUpperInvariant(Name.Trim()[0]).ToString() : "?";
 
     public string Color
     {
@@ -94,10 +98,20 @@ public class Profile : INotifyPropertyChanged
 
     // A new profile with the same name, group, colour, notes and home pages. Logins and site data
     // are deliberately not copied: the copy starts signed out, with its own isolated storage.
-    public Profile Duplicate() => new()
+    // The copy is named "<name> (copy)", then "(copy 2)", "(copy 3)"... avoiding names already in use.
+    public Profile Duplicate(IEnumerable<string>? existingNames = null)
     {
-        Name = Name + " (copy)", Color = Color, Group = Group, Notes = Notes, HomeUrls = new List<string>(HomeUrls),
-    };
+        var baseName = Name.Trim();
+        while (System.Text.RegularExpressions.Regex.IsMatch(baseName, @" \(copy(?: \d+)?\)$"))
+            baseName = System.Text.RegularExpressions.Regex.Replace(baseName, @" \(copy(?: \d+)?\)$", "");
+        var taken = new HashSet<string>(existingNames ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
+        var name = baseName + " (copy)";
+        for (var n = 2; taken.Contains(name); n++) name = $"{baseName} (copy {n})";
+        return new Profile
+        {
+            Name = name, Color = Color, Group = Group, Notes = Notes, HomeUrls = new List<string>(HomeUrls),
+        };
+    }
 
     public event PropertyChangedEventHandler? PropertyChanged;
     void Changed(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));

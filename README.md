@@ -33,6 +33,25 @@ Change the limits in `%LocalAppData%\LightBrowser\settings.json` and restart:
 
 An unloaded tab loses unsaved page state (text typed into a form, scroll position), so finish forms before leaving a tab for a long time.
 
+## Modes
+
+Three buttons at the bottom of the sidebar switch how much memory the browser may use, live, with no restart:
+
+| Mode | Tabs loaded at once | Unused tab unloaded after | Hidden tabs |
+|---|---|---|---|
+| Low RAM | 2 | 3 min | trimmed |
+| Balanced (default) | 5 | 10 min | trimmed |
+| Fast | 15 | 60 min | not trimmed |
+
+Your choice is remembered. Advanced: set `"Mode": "Custom"` in `settings.json` to use your own `MaxLoadedTabs`, `IdleMinutes` and `GraceSeconds`. `BrowserArguments` passes extra Chromium switches to the engine; in a test with six real sites, `--disable-gpu` cut total memory by about 25-30% (roughly 300 MB to 225 MB) at the cost of a little more CPU (about 1% to 3% of a core when idle), so it can suit a weak PC. It is off by default.
+
+## History, passwords and names
+
+- **History** (Ctrl+H or the clock button): each profile has its own local history with search. Stored per profile in `history\`, web pages only, no fragments or credentials in addresses, newest 2000 kept, never uploaded.
+- **Passwords** (button in the toolbar, or right-click a profile): each profile has its own password list with add, edit, delete, copy (clipboard cleared after 30 seconds), a generator, and "Fill page" for the login form on screen. Encrypted with Windows DPAPI for your Windows account and bound to its profile, stored in `vault\`. The engine's own "Save password?" prompt still works and is also per profile, but it cannot be listed, which is why this list exists. Fill works on forms in the main page, not inside frames.
+- **Rename**: F2, double-click a profile, or the pencil button on hover. The trash button on hover moves a profile to Trash (restore from Trash).
+- **Suggested names** in the new-profile dialog come from the group, the first home page and the names already used.
+
 ## Run
 
 Download an exe from [Releases](../../releases):
