@@ -6,6 +6,8 @@ using System.Windows.Media;
 namespace LightBrowser;
 
 // Code-only dialog: name, group, colour, notes and the pages opened by "Open home pages".
+// Two separate suggestion rows: common sites (shared by every group) and sites other profiles in the
+// typed group already use.
 public class ProfileDialog : Window
 {
     static readonly (string Name, string Hex)[] Colors =
@@ -23,10 +25,14 @@ public class ProfileDialog : Window
     readonly TextBox _notes = NewField();
     readonly TextBox _urls = NewField();
     readonly List<Border> _swatches = new();
+    readonly StackPanel _groupChips = new();
+    readonly Func<string, IReadOnlyList<string>>? _groupSites;
     int _selected;
 
-    public ProfileDialog(Profile? existing = null)
+    public ProfileDialog(Profile? existing = null, IReadOnlyList<string>? suggestions = null,
+                         Func<string, IReadOnlyList<string>>? groupSites = null)
     {
+        _groupSites = groupSites;
         Title = existing == null ? "New profile" : "Edit profile";
         Width = 400;
         SizeToContent = SizeToContent.Height;
@@ -86,12 +92,58 @@ public class ProfileDialog : Window
         panel.Children.Add(swatchRow);
         panel.Children.Add(Label("Home pages (one URL per line)", 12));
         panel.Children.Add(_urls);
+        panel.Children.Add(_groupChips);
+        if (BuildChips("Suggested sites (worked before, shared by all groups)", (suggestions ?? new List<string>()).Reverse().ToList()) is { } common)
+            panel.Children.Add(common);
         panel.Children.Add(Label("Notes (optional, shown on hover)", 12));
         panel.Children.Add(_notes);
         panel.Children.Add(buttons);
         Content = panel;
 
+        _group.TextChanged += (_, _) => RebuildGroupChips();
+        RebuildGroupChips();
         Loaded += (_, _) => { _name.Focus(); _name.SelectAll(); };
+    }
+
+    void RebuildGroupChips()
+    {
+        _groupChips.Children.Clear();
+        var sites = _groupSites?.Invoke(_group.Text) ?? new List<string>();
+        if (BuildChips("Used by this group's other profiles", sites) is { } chips) _groupChips.Children.Add(chips);
+    }
+
+    // A labelled row of clickable site chips. Clicking one appends it to Home pages. Sites already
+    // listed there are not offered.
+    StackPanel? BuildChips(string label, IReadOnlyList<string> sites)
+    {
+        if (sites.Count == 0) return null;
+
+        var present = new HashSet<string>(
+            HomeUrls.Select(SuggestionStore.Normalize).OfType<string>(), StringComparer.OrdinalIgnoreCase);
+        var wrap = new WrapPanel { Margin = new Thickness(0, 4, 0, 0) };
+        var box = new StackPanel();
+        box.Children.Add(Label(label, 12));
+        box.Children.Add(wrap);
+
+        foreach (var site in sites.Where(s => !present.Contains(s)).Take(12))
+        {
+            var chip = new Button
+            {
+                Content = new Uri(site).Host, ToolTip = site, Foreground = Fg,
+                Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(0, 0, 6, 6),
+                Style = (Style)Application.Current.FindResource("Flat"),
+                Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x3B, 0x42)),
+            };
+            chip.Click += (_, _) =>
+            {
+                var text = _urls.Text;
+                _urls.Text = (text.Length == 0 || text.EndsWith('\n') ? text : text + Environment.NewLine) + site;
+                wrap.Children.Remove(chip);
+                if (wrap.Children.Count == 0) box.Visibility = Visibility.Collapsed;
+            };
+            wrap.Children.Add(chip);
+        }
+        return wrap.Children.Count == 0 ? null : box;
     }
 
     static TextBox NewField() => new()

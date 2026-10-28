@@ -21,12 +21,19 @@
                 <TextBlock x:Name="SearchHint" Text="Search (Ctrl+K)" Foreground="#6B6E78"
                            Margin="10,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
             </Grid>
+            <TextBlock x:Name="StatsText" DockPanel.Dock="Bottom" Foreground="#6B6E78" FontSize="10.5"
+                       TextWrapping="Wrap" Margin="12,0,8,8"
+                       ToolTip="Tabs loaded now / limit (settings.json), and this app's memory including its browser processes"/>
             <Button x:Name="TrashBtn" DockPanel.Dock="Bottom" Content="Trash" Style="{StaticResource Flat}"
-                    Foreground="#8A8D96" Margin="8,0,8,8" Click="Trash_Click"/>
+                    Foreground="#8A8D96" Margin="8,0,8,4" Click="Trash_Click"/>
+            <Button DockPanel.Dock="Bottom" Content="Launch site in profiles..." Style="{StaticResource Flat}"
+                    Margin="8,8,8,0" Click="Launch_Click"
+                    ToolTip="Open one website in several profiles at once, or close several profiles"/>
             <Button DockPanel.Dock="Bottom" Content="+ New profile" Style="{StaticResource Flat}"
                     Background="#33FFFFFF" Margin="8,8,8,4" Padding="8,8" Click="AddProfile_Click"/>
             <ListBox x:Name="ProfileList" Background="Transparent" BorderThickness="0"
                      ItemContainerStyle="{StaticResource Item}"
+                     VirtualizingPanel.IsVirtualizingWhenGrouping="True"
                      SelectionChanged="ProfileList_SelectionChanged">
                 <ListBox.GroupStyle>
                     <GroupStyle>
@@ -41,12 +48,15 @@
                 <ListBox.ItemTemplate>
                     <DataTemplate>
                         <StackPanel Orientation="Horizontal" Background="Transparent"
-                                    ToolTip="{Binding NotesTip}">
+                                    ToolTip="{Binding Tip}">
                             <StackPanel.ContextMenu>
                                 <ContextMenu Opened="ProfileMenu_Opened">
                                     <MenuItem Tag="normal" Header="Open home pages" Click="OpenHome_Click"/>
                                     <MenuItem Tag="normal" Header="Edit..." Click="EditProfile_Click"/>
+                                    <MenuItem Tag="normal" Header="Duplicate (without logins)" Click="Duplicate_Click"/>
                                     <MenuItem Tag="open" Header="Close profile (frees memory)" Click="CloseProfile_Click"/>
+                                    <MenuItem Tag="open" Header="Restart profile" Click="Restart_Click"/>
+                                    <MenuItem Tag="normal" Header="Clear website data..." Click="ClearData_Click"/>
                                     <MenuItem Tag="normal" Header="Move to Trash" Click="MoveToTrash_Click"/>
                                     <MenuItem Tag="trash" Header="Restore" Click="Restore_Click"/>
                                     <MenuItem Tag="trash" Header="Delete forever (wipes its data)" Click="DeleteForever_Click"/>
@@ -83,10 +93,11 @@
                          ScrollViewer.HorizontalScrollBarVisibility="Hidden"
                          ScrollViewer.VerticalScrollBarVisibility="Disabled"
                          SelectionChanged="TabList_SelectionChanged"
-                         PreviewMouseDown="TabList_PreviewMouseDown">
+                         PreviewMouseDown="TabList_PreviewMouseDown"
+                         PreviewMouseWheel="TabList_PreviewMouseWheel">
                     <ListBox.ItemsPanel>
                         <ItemsPanelTemplate>
-                            <StackPanel Orientation="Horizontal"/>
+                            <VirtualizingStackPanel Orientation="Horizontal"/>
                         </ItemsPanelTemplate>
                     </ListBox.ItemsPanel>
                     <ListBox.ItemTemplate>
@@ -113,8 +124,19 @@
                             Style="{StaticResource Flat}" ToolTip="Reload" Click="Reload_Click"/>
                     <TextBox x:Name="Address" Margin="0,6,8,6" Padding="8,0" VerticalContentAlignment="Center"
                              Background="#1E1F24" Foreground="#E6E6E6" BorderBrush="#3A3B42"
-                             CaretBrush="#E6E6E6" SelectionBrush="#4F8EF7" KeyDown="Address_KeyDown"/>
+                             CaretBrush="#E6E6E6" SelectionBrush="#4F8EF7" KeyDown="Address_KeyDown"
+                             PreviewKeyDown="Address_PreviewKeyDown" TextChanged="Address_TextChanged"
+                             LostKeyboardFocus="Address_LostFocus"/>
                 </DockPanel>
+                <Popup x:Name="SuggestPopup" PlacementTarget="{Binding ElementName=Address}"
+                       Placement="Bottom" StaysOpen="True" AllowsTransparency="True">
+                    <Border Background="#2B2C32" BorderBrush="#3A3B42" BorderThickness="1" CornerRadius="6"
+                            Padding="2" MinWidth="{Binding ActualWidth, ElementName=Address}">
+                        <ListBox x:Name="SuggestList" Background="Transparent" BorderThickness="0"
+                                 ItemContainerStyle="{StaticResource Item}"
+                                 PreviewMouseLeftButtonDown="SuggestList_PreviewMouseLeftButtonDown"/>
+                    </Border>
+                </Popup>
                 <ProgressBar x:Name="Loading" IsIndeterminate="True" Height="2" VerticalAlignment="Bottom"
                              Foreground="#4F8EF7" Background="Transparent" BorderThickness="0"
                              Visibility="Collapsed"/>

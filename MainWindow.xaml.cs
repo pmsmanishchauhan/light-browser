@@ -1,9 +1,11 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
 
@@ -12,11 +14,15 @@ namespace LightBrowser;
 public partial class MainWindow : Window
 {
     readonly ProfileStore _store = ProfileStore.Load();
+    readonly AppSettings _settings = AppSettings.Load();
+    readonly SuggestionStore _suggestions = SuggestionStore.Load();
     readonly ICollectionView _view;
     CoreWebView2Environment? _env;
     Profile? _current;
     bool _suppressSelection;   // set while code (not the user) changes the selected profile
     bool _showTrash;           // sidebar is listing Trash instead of profiles
+    bool _dirty;               // profiles.json has changes not yet written (e.g. last-used time)
+    bool _recovering;          // rebuilding after the browser process crashed
 
     BrowserTab? ActiveTab => _current?.Active;
     CoreWebView2? ActiveWeb => ActiveTab?.View?.CoreWebView2;
@@ -34,6 +40,16 @@ public partial class MainWindow : Window
         RefreshView();
 
         Closing += (_, _) => SaveSession();
+
+        // Every 30 s: unload surplus/idle tabs, and save tab lists so a crash or power cut loses little.
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+        timer.Tick += (_, _) =>
+        {
+            TrimMemory();
+            AutoSave();
+        };
+        timer.Start();
+
         Loaded += async (_, _) =>
         {
             try
@@ -52,6 +68,7 @@ public partial class MainWindow : Window
             var first = _view.Cast<Profile>().FirstOrDefault();
             if (first != null) ProfileList.SelectedItem = first;
             UpdateEmptyState();
+            UpdateStats();
         };
     }
 
@@ -80,20 +97,38 @@ public partial class MainWindow : Window
         Loading.Visibility = ActiveTab is { IsLoading: true } ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    // Remember each opened profile's tabs so they come back next time.
-    static void CaptureSession(Profile p)
+    // ---- saving ---------------------------------------------------------------------------
+
+    static string? CurrentUrl(BrowserTab t)
     {
-        if (p.Tabs.Count == 0) return;   // not opened this run: keep what was saved before
-        p.OpenUrls = p.Tabs
-            .Select(t => t.View?.CoreWebView2?.Source ?? t.PendingUrl ?? "")
-            .Where(s => s != "" && s != "about:blank")
-            .ToList();
+        try { return t.View?.CoreWebView2?.Source ?? t.LastUrl ?? t.PendingUrl; }
+        catch (Exception) { return t.LastUrl ?? t.PendingUrl; }   // WebView2 already gone
+    }
+
+    // Remember each opened profile's tabs so they come back next time. True if the list changed.
+    static bool CaptureSession(Profile p)
+    {
+        if (p.Tabs.Count == 0) return false;   // not opened this run: keep what was saved before
+        var urls = p.Tabs.Select(CurrentUrl).Where(s => !string.IsNullOrEmpty(s) && s != "about:blank").Select(s => s!).ToList();
+        if (urls.SequenceEqual(p.OpenUrls)) return false;
+        p.OpenUrls = urls;
+        return true;
     }
 
     void SaveSession()
     {
         foreach (var p in _store.Profiles) CaptureSession(p);
         _store.Save();
+        _dirty = false;
+    }
+
+    void AutoSave()
+    {
+        var changed = _dirty;
+        foreach (var p in _store.Profiles) changed |= CaptureSession(p);
+        if (!changed) return;
+        _store.Save();
+        _dirty = false;
     }
 
     // ---- profile list: search, groups, trash ----------------------------------------------
@@ -220,7 +255,12 @@ public partial class MainWindow : Window
     {
         foreach (var pr in _store.Profiles)
             foreach (var t in pr.Tabs)
-                if (t.View != null) t.View.Visibility = Visibility.Collapsed;
+                if (t.View != null)
+                {
+                    if (t.View.Visibility == Visibility.Visible) t.LastShown = DateTime.UtcNow;
+                    t.View.Visibility = Visibility.Collapsed;
+                    SetMemoryLevel(t, visible: false);
+                }
     }
 
     async Task ShowProfileAsync(Profile p, bool openPages)
@@ -230,6 +270,8 @@ public partial class MainWindow : Window
         TabList.ItemsSource = p.Tabs;
         ApplyProfileChrome();
         UpdateEmptyState();
+        p.LastUsed = DateTime.UtcNow;
+        _dirty = true;
 
         if (p.Tabs.Count > 0) SelectTab(p.Active ?? p.Tabs[0]);
         else if (openPages) await OpenStartPagesAsync(p);
@@ -251,10 +293,12 @@ public partial class MainWindow : Window
         await first;
     }
 
-    static void AddLazyTab(Profile p, string url)
+    static BrowserTab AddLazyTab(Profile p, string url)
     {
         var host = Uri.TryCreate(url, UriKind.Absolute, out var u) ? u.Host : url;
-        p.Tabs.Add(new BrowserTab { PendingUrl = url, Title = host });
+        var tab = new BrowserTab { PendingUrl = url, LastUrl = url, Title = host };
+        p.Tabs.Add(tab);
+        return tab;
     }
 
     async Task OpenHomeAsync(Profile p)
@@ -274,7 +318,7 @@ public partial class MainWindow : Window
 
     void AddProfile_Click(object sender, RoutedEventArgs e)
     {
-        var dlg = new ProfileDialog { Owner = this };
+        var dlg = new ProfileDialog(null, _suggestions.Sites, GroupSitesFor(null)) { Owner = this };
         if (dlg.ShowDialog() != true) return;
         var p = new Profile
         {
@@ -293,7 +337,7 @@ public partial class MainWindow : Window
     void EditProfile_Click(object sender, RoutedEventArgs e)
     {
         if (ProfileOf(sender) is not { } p) return;
-        var dlg = new ProfileDialog(p) { Owner = this };
+        var dlg = new ProfileDialog(p, _suggestions.Sites, GroupSitesFor(p)) { Owner = this };
         if (dlg.ShowDialog() != true) return;
         p.Name = dlg.ProfileName;
         p.Color = dlg.ColorHex;
@@ -302,6 +346,17 @@ public partial class MainWindow : Window
         p.Notes = dlg.Notes;
         _store.Save();
         if (p == _current) ApplyProfileChrome();
+        RefreshView();
+    }
+
+    Func<string, IReadOnlyList<string>> GroupSitesFor(Profile? except) =>
+        group => SuggestionStore.ForGroup(group, _store.Profiles, except);
+
+    void Duplicate_Click(object sender, RoutedEventArgs e)
+    {
+        if (ProfileOf(sender) is not { } p) return;
+        _store.Profiles.Add(p.Duplicate());
+        _store.Save();
         RefreshView();
     }
 
@@ -327,6 +382,38 @@ public partial class MainWindow : Window
     void CloseProfile_Click(object sender, RoutedEventArgs e)
     {
         if (ProfileOf(sender) is { } p) CloseProfile(p);
+    }
+
+    void Restart_Click(object sender, RoutedEventArgs e)
+    {
+        if (ProfileOf(sender) is not { } p) return;
+        CloseProfile(p);
+        ProfileList.SelectedItem = p;   // reopens it from its saved tab list
+    }
+
+    // Wipes cookies, logins and site data of one profile; other profiles are untouched. Needs a live
+    // WebView2 on that profile, so a blank tab is opened for it if none is loaded.
+    async Task WipeProfileDataAsync(Profile p)
+    {
+        SelectProfileQuietly(p);
+        await ShowProfileAsync(p, openPages: false);
+        var live = p.Tabs.FirstOrDefault(t => t.View?.CoreWebView2 != null);
+        var temp = live == null ? await NewTabAsync(p, "about:blank") : null;
+        await (live ?? temp)!.View!.CoreWebView2.Profile.ClearBrowsingDataAsync();
+        if (temp != null) DisposeTab(p, temp);
+    }
+
+    async void ClearData_Click(object sender, RoutedEventArgs e)
+    {
+        if (ProfileOf(sender) is not { } p || _env == null) return;
+        var ok = MessageBox.Show(this,
+            $"Clear all cookies, logins and site data of \"{p.Name}\"?\n\nYou will be signed out of every site in this profile. Other profiles are not affected.",
+            "Clear website data", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (ok != MessageBoxResult.Yes) return;
+
+        await WipeProfileDataAsync(p);
+        foreach (var t in p.Tabs) t.View?.CoreWebView2?.Reload();
+        if (p.Tabs.Count == 0) SelectNoProfile();
     }
 
     void MoveToTrash_Click(object sender, RoutedEventArgs e)
@@ -360,20 +447,52 @@ public partial class MainWindow : Window
             "Delete forever", MessageBoxButton.YesNo, MessageBoxImage.Warning);
         if (ok != MessageBoxResult.Yes) return;
 
-        // Clearing needs a live WebView2 on that profile. Drop unopened tabs, then use a loaded
-        // tab or open a blank one.
         foreach (var lazy in p.Tabs.Where(t => t.View == null).ToList()) p.Tabs.Remove(lazy);
-        SelectProfileQuietly(p);
-        await ShowProfileAsync(p, openPages: false);
-        var live = p.Tabs.FirstOrDefault(t => t.View?.CoreWebView2 != null) ?? await NewTabAsync(p, "about:blank");
-        await live.View!.CoreWebView2.Profile.ClearBrowsingDataAsync();
-
+        await WipeProfileDataAsync(p);
         foreach (var t in p.Tabs.ToList()) DisposeTab(p, t);
         _current = null;
         _store.Profiles.Remove(p);
         _store.Save();
         ShowNothing();
         RefreshView();
+    }
+
+    // ---- launch one site in several profiles ----------------------------------------------
+
+    async void Launch_Click(object sender, RoutedEventArgs e)
+    {
+        if (_env == null) return;
+        var profiles = _store.Profiles.Where(p => !p.IsDeleted)
+            .OrderBy(p => p.GroupName).ThenBy(p => p.Name).ToList();
+        var dlg = new LaunchDialog(profiles, _suggestions.Sites, _current) { Owner = this };
+        if (dlg.ShowDialog() != true) return;
+
+        if (dlg.Action == LaunchAction.Close)
+        {
+            foreach (var p in dlg.Selected) CloseProfile(p);
+            return;
+        }
+        foreach (var p in dlg.Selected) await OpenSiteInProfileAsync(p, dlg.Url);
+    }
+
+    static bool SameUrl(string? a, string? b) =>
+        string.Equals(a?.TrimEnd('/'), b?.TrimEnd('/'), StringComparison.OrdinalIgnoreCase);
+
+    // The profile on screen gets a loaded tab. Any other profile gets an unloaded tab that loads when
+    // you open that profile, so launching in 50 profiles does not load 50 pages.
+    async Task OpenSiteInProfileAsync(Profile p, string url)
+    {
+        if (p.Tabs.Count == 0)   // keep its saved tabs when it has not been opened this run
+            foreach (var saved in p.OpenUrls) AddLazyTab(p, saved);
+
+        var existing = p.Tabs.FirstOrDefault(t => SameUrl(CurrentUrl(t), url));
+        if (p == _current)
+        {
+            if (existing != null) SelectTab(existing);
+            else await NewTabAsync(p, url);
+            return;
+        }
+        p.Active = existing ?? AddLazyTab(p, url);
     }
 
     // ---- tabs -----------------------------------------------------------------------------
@@ -402,11 +521,13 @@ public partial class MainWindow : Window
         var web = view.CoreWebView2;
         web.Settings.IsPasswordAutosaveEnabled = true;   // "Save password?" prompt, stored per profile
         web.Settings.IsGeneralAutofillEnabled = true;
+        SetMemoryLevel(tab, visible: ActiveTab == tab);
 
         web.DocumentTitleChanged += (_, _) =>
             tab.Title = string.IsNullOrWhiteSpace(web.DocumentTitle) ? web.Source : web.DocumentTitle;
         web.SourceChanged += (_, _) =>
         {
+            tab.LastUrl = web.Source;
             if (ActiveTab == tab) Address.Text = web.Source == "about:blank" ? "" : web.Source;
         };
         web.NavigationStarting += (_, _) =>
@@ -414,12 +535,30 @@ public partial class MainWindow : Window
             tab.IsLoading = true;
             if (ActiveTab == tab) UpdateChrome();
         };
-        web.NavigationCompleted += (_, _) =>
+        web.NavigationCompleted += (_, args) =>
         {
             tab.IsLoading = false;
+            if (args.IsSuccess) tab.Crashes = 0;
             if (ActiveTab == tab) UpdateChrome();
+            // A page that loaded with a 2xx status is a site that works: remember it for every profile.
+            _suggestions.AddIfVerified(web.Source, args.IsSuccess, args.HttpStatusCode);
         };
         web.HistoryChanged += (_, _) => { if (ActiveTab == tab) UpdateChrome(); };
+
+        // Crash recovery. A crashed page renderer reloads its tab (at most 3 times in a row); a crashed
+        // browser process takes every WebView2 down, so all tabs are rebuilt from their last address.
+        web.ProcessFailed += (_, args) =>
+        {
+            switch (args.ProcessFailedKind)
+            {
+                case CoreWebView2ProcessFailedKind.BrowserProcessExited:
+                    _ = RecoverFromBrowserCrashAsync();
+                    break;
+                case CoreWebView2ProcessFailedKind.RenderProcessExited:
+                    if (++tab.Crashes <= 3) web.Reload();
+                    break;
+            }
+        };
 
         // Popups (OAuth, "pay with" windows) open as tabs in the same profile and keep window.opener.
         web.NewWindowRequested += async (_, args) =>
@@ -438,20 +577,59 @@ public partial class MainWindow : Window
         await web.AddScriptToExecuteOnDocumentCreatedAsync(ShortcutScript);
         web.WebMessageReceived += (_, args) =>
         {
+            // Only the page itself may trigger a shortcut, not an embedded frame from another site.
+            if (!SameOrigin(args.Source, web.Source)) return;
             var msg = args.TryGetWebMessageAsString();
             if (msg is { Length: 1 }) HandleShortcut(msg[0]);
         };
 
         if (url != null && url != "about:blank") web.Navigate(url);
+        TrimMemory();
+    }
+
+    static bool SameOrigin(string? a, string? b) =>
+        Uri.TryCreate(a, UriKind.Absolute, out var x) && Uri.TryCreate(b, UriKind.Absolute, out var y)
+        && x.GetLeftPart(UriPartial.Authority) == y.GetLeftPart(UriPartial.Authority);
+
+    async Task RecoverFromBrowserCrashAsync()
+    {
+        if (_recovering) return;
+        _recovering = true;
+        try
+        {
+            foreach (var tab in _store.Profiles.SelectMany(p => p.Tabs).Where(t => t.View != null).ToList())
+            {
+                var url = CurrentUrl(tab);
+                tab.PendingUrl = url == "about:blank" ? null : url;
+                WebHost.Children.Remove(tab.View!);
+                try { tab.View!.Dispose(); } catch (Exception) { }
+                tab.View = null;
+                tab.IsLoading = false;
+            }
+            _env = await CoreWebView2Environment.CreateAsync(null, ProfileStore.DataDir);
+            if (_current?.Active is { } active) SelectTab(active);   // reload what was on screen
+        }
+        catch (Exception)
+        {
+            // Tabs stay unloaded; clicking one tries again.
+        }
+        finally { _recovering = false; }
     }
 
     void SelectTab(BrowserTab tab)
     {
         if (_current == null) return;
         foreach (var t in _current.Tabs)
-            if (t.View != null) t.View.Visibility = t == tab ? Visibility.Visible : Visibility.Collapsed;
+            if (t.View != null)
+            {
+                if (t != tab && t.View.Visibility == Visibility.Visible) t.LastShown = DateTime.UtcNow;
+                t.View.Visibility = t == tab ? Visibility.Visible : Visibility.Collapsed;
+                SetMemoryLevel(t, visible: t == tab);
+            }
+        tab.LastShown = DateTime.UtcNow;
         _current.Active = tab;
         TabList.SelectedItem = tab;
+        TabList.ScrollIntoView(tab);
 
         if (tab.View == null)   // restored tab clicked for the first time: open it now
         {
@@ -520,6 +698,101 @@ public partial class MainWindow : Window
         Address.Focus();
     }
 
+    // ---- memory ---------------------------------------------------------------------------
+
+    // Keeps RAM bounded however many tabs exist: only MaxLoadedTabs tabs are ever loaded, and a hidden
+    // tab unused for IdleMinutes is dropped. A dropped tab keeps its address and title, costs almost
+    // nothing, and reloads (still logged in, cookies are on disk) when clicked.
+    void TrimMemory()
+    {
+        var now = DateTime.UtcNow;
+        var grace = TimeSpan.FromSeconds(_settings.GraceSeconds);
+        var idle = TimeSpan.FromMinutes(_settings.IdleMinutes);
+
+        var loaded = _store.Profiles.SelectMany(p => p.Tabs).Where(t => t.View != null).ToList();
+        var excess = loaded.Count - _settings.MaxLoadedTabs;
+
+        foreach (var tab in loaded.Where(t => CanUnload(t, now, grace)).OrderBy(t => t.LastShown))
+        {
+            // Oldest first: once one is neither idle nor needed to get under the limit, none after it is.
+            if (excess <= 0 && now - tab.LastShown <= idle) break;
+            UnloadTab(tab);
+            excess--;
+        }
+        UpdateStats();
+    }
+
+    bool CanUnload(BrowserTab tab, DateTime now, TimeSpan grace)
+    {
+        if (tab == ActiveTab || tab.IsLoading) return false;
+        if (tab.View?.CoreWebView2 is not { } web) return false;   // still starting up
+        return !web.IsDocumentPlayingAudio && now - tab.LastShown > grace;
+    }
+
+    void UnloadTab(BrowserTab tab)
+    {
+        var view = tab.View!;
+        var url = CurrentUrl(tab);
+        tab.View = null;
+        tab.PendingUrl = url == "about:blank" ? null : url;
+        tab.IsLoading = false;
+        WebHost.Children.Remove(view);
+        view.Dispose();
+    }
+
+    // Hidden tabs ask WebView2 to trim their caches; not supported by very old runtimes, so ignore failures.
+    static void SetMemoryLevel(BrowserTab tab, bool visible)
+    {
+        try
+        {
+            if (tab.View?.CoreWebView2 is { } web)
+                web.MemoryUsageTargetLevel = visible
+                    ? CoreWebView2MemoryUsageTargetLevel.Normal
+                    : CoreWebView2MemoryUsageTargetLevel.Low;
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    // Sidebar diagnostics: tabs loaded vs the limit, and the memory of this app plus its browser processes.
+    void UpdateStats()
+    {
+        var tabs = _store.Profiles.SelectMany(p => p.Tabs).ToList();
+        var loaded = tabs.Count(t => t.View != null);
+        StatsText.Text = $"{loaded} of {_settings.MaxLoadedTabs} tabs loaded, {tabs.Count - loaded} unloaded\n{AppMemoryMb()} MB in use";
+    }
+
+    long AppMemoryMb()
+    {
+        long bytes = 0;
+        try { bytes += Process.GetCurrentProcess().PrivateMemorySize64; } catch (Exception) { }
+        try
+        {
+            if (_env != null)
+                foreach (var info in _env.GetProcessInfos())
+                    try { bytes += Process.GetProcessById(info.ProcessId).PrivateMemorySize64; } catch (Exception) { }
+        }
+        catch (Exception) { }
+        return bytes / (1024 * 1024);
+    }
+
+    // Mouse wheel scrolls the tab strip sideways (it can hold thousands of tabs).
+    void TabList_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (FindScroll(TabList) is not { } scroll) return;
+        if (e.Delta > 0) scroll.LineLeft(); else scroll.LineRight();
+        e.Handled = true;
+    }
+
+    static ScrollViewer? FindScroll(DependencyObject parent)
+    {
+        if (parent is ScrollViewer scroll) return scroll;
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+            if (FindScroll(VisualTreeHelper.GetChild(parent, i)) is { } found) return found;
+        return null;
+    }
+
     // ---- navigation and shortcuts ---------------------------------------------------------
 
     void Back_Click(object sender, RoutedEventArgs e) { if (ActiveWeb is { CanGoBack: true } w) w.GoBack(); }
@@ -529,8 +802,66 @@ public partial class MainWindow : Window
     void Address_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key != Key.Enter) return;
-        ActiveWeb?.Navigate(Normalize(Address.Text));
         e.Handled = true;
+        if (SuggestPopup.IsOpen && SuggestList.SelectedItem is string pick)
+        {
+            OpenSuggestion(pick);
+            return;
+        }
+        SuggestPopup.IsOpen = false;
+        ActiveWeb?.Navigate(Normalize(Address.Text));
+    }
+
+    // ---- suggested sites in the address bar -----------------------------------------------
+
+    void Address_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        // Only while the user is typing, not when a page navigation rewrites the address.
+        if (!Address.IsKeyboardFocusWithin) { SuggestPopup.IsOpen = false; return; }
+        var hits = _suggestions.Matching(Address.Text, 6);
+        SuggestList.ItemsSource = hits;
+        SuggestList.SelectedIndex = -1;
+        SuggestPopup.IsOpen = hits.Count > 0;
+    }
+
+    void Address_LostFocus(object sender, KeyboardFocusChangedEventArgs e) => SuggestPopup.IsOpen = false;
+
+    void Address_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (!SuggestPopup.IsOpen) return;
+        switch (e.Key)
+        {
+            case Key.Down:
+                SuggestList.SelectedIndex = Math.Min(SuggestList.SelectedIndex + 1, SuggestList.Items.Count - 1);
+                e.Handled = true;
+                break;
+            case Key.Up:
+                SuggestList.SelectedIndex = Math.Max(SuggestList.SelectedIndex - 1, -1);
+                e.Handled = true;
+                break;
+            case Key.Escape:
+                SuggestPopup.IsOpen = false;
+                e.Handled = true;
+                break;
+        }
+    }
+
+    // Handled on mouse-down so the address box does not lose focus (and close the list) first.
+    void SuggestList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is not DependencyObject source) return;
+        if (ItemsControl.ContainerFromElement(SuggestList, source) is ListBoxItem { DataContext: string url })
+        {
+            OpenSuggestion(url);
+            e.Handled = true;
+        }
+    }
+
+    void OpenSuggestion(string url)
+    {
+        Address.Text = url;
+        SuggestPopup.IsOpen = false;   // after the text change, which would reopen it
+        ActiveWeb?.Navigate(url);
     }
 
     static string Normalize(string text)
@@ -541,9 +872,10 @@ public partial class MainWindow : Window
         return "https://www.google.com/search?q=" + Uri.EscapeDataString(text);
     }
 
-    // Ctrl+T new tab, Ctrl+W close tab, Ctrl+L address bar, Ctrl+K profile search.
+    // Ctrl+T new tab, Ctrl+W close tab, Ctrl+L address bar, Ctrl+K profile search. Top-level page only.
     const string ShortcutScript =
         "window.addEventListener('keydown', e => {" +
+        " if (window !== window.top) return;" +
         " if (!e.ctrlKey || e.altKey || e.shiftKey) return;" +
         " const k = e.key.toLowerCase();" +
         " if (k === 't' || k === 'w' || k === 'l' || k === 'k') { e.preventDefault(); window.chrome.webview.postMessage(k); }" +

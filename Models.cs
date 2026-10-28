@@ -14,6 +14,7 @@ public class Profile : INotifyPropertyChanged
     string _color = "#4F8EF7";
     string _group = "";
     string _notes = "";
+    DateTime? _lastUsed;
 
     public Profile() => Tabs.CollectionChanged += (_, _) => Changed(nameof(IsOpen));
 
@@ -45,7 +46,14 @@ public class Profile : INotifyPropertyChanged
     public string Notes
     {
         get => _notes;
-        set { _notes = value; Changed(nameof(Notes)); Changed(nameof(NotesTip)); }
+        set { _notes = value; Changed(nameof(Notes)); Changed(nameof(Tip)); }
+    }
+
+    // UTC time the profile was last opened.
+    public DateTime? LastUsed
+    {
+        get => _lastUsed;
+        set { _lastUsed = value; Changed(nameof(LastUsed)); Changed(nameof(Tip)); }
     }
 
     // In Trash: hidden from the profile list, logins kept until "Delete forever".
@@ -54,9 +62,18 @@ public class Profile : INotifyPropertyChanged
     [JsonIgnore]
     public string GroupName => string.IsNullOrWhiteSpace(Group) ? "Ungrouped" : Group;
 
-    // Null when empty so the list shows no tooltip.
+    // Hover text in the profile list: notes plus when it was last used. Null when there is neither.
     [JsonIgnore]
-    public string? NotesTip => string.IsNullOrWhiteSpace(Notes) ? null : Notes;
+    public string? Tip
+    {
+        get
+        {
+            var lines = new List<string>();
+            if (!string.IsNullOrWhiteSpace(Notes)) lines.Add(Notes.Trim());
+            if (LastUsed is { } t) lines.Add($"Last used {t.ToLocalTime():d MMM yyyy, HH:mm}");
+            return lines.Count == 0 ? null : string.Join("\n", lines);
+        }
+    }
 
     // True once the profile has been opened this run (it has tabs); drives the green dot.
     [JsonIgnore]
@@ -75,6 +92,13 @@ public class Profile : INotifyPropertyChanged
     [JsonIgnore]
     public BrowserTab? Active { get; set; }
 
+    // A new profile with the same name, group, colour, notes and home pages. Logins and site data
+    // are deliberately not copied: the copy starts signed out, with its own isolated storage.
+    public Profile Duplicate() => new()
+    {
+        Name = Name + " (copy)", Color = Color, Group = Group, Notes = Notes, HomeUrls = new List<string>(HomeUrls),
+    };
+
     public event PropertyChangedEventHandler? PropertyChanged;
     void Changed(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
@@ -88,7 +112,16 @@ public class BrowserTab : INotifyPropertyChanged
 
     public string? PendingUrl { get; set; }
 
+    // Last known address, kept so the tab can be restored even if its WebView2 died.
+    public string? LastUrl { get; set; }
+
     public bool IsLoading { get; set; }
+
+    // Consecutive renderer crashes without a successful load; stops endless auto-reload.
+    public int Crashes { get; set; }
+
+    // Last time this tab was on screen; the memory trimmer unloads the oldest first.
+    public DateTime LastShown { get; set; } = DateTime.UtcNow;
 
     public string Title
     {
@@ -101,37 +134,40 @@ public class BrowserTab : INotifyPropertyChanged
 
 public class ProfileStore
 {
+    // Data folder. LIGHTBROWSER_HOME overrides it (portable use, and isolated test runs).
     public static string Root =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LightBrowser");
+        Environment.GetEnvironmentVariable("LIGHTBROWSER_HOME") is { Length: > 0 } custom
+            ? custom
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LightBrowser");
 
     // One shared WebView2 environment: all profiles live under it and share browser processes.
     public static string DataDir => Path.Combine(Root, "WebView2Data");
 
-    static string FilePath => Path.Combine(Root, "profiles.json");
+    public static string FilePath => Path.Combine(Root, "profiles.json");
 
     public ObservableCollection<Profile> Profiles { get; } = new();
 
+    // An unreadable profiles.json is moved aside and the backup used; the original is never overwritten
+    // by an empty list, so a bad file cannot wipe your profiles.
     public static ProfileStore Load()
     {
         var store = new ProfileStore();
-        try
-        {
-            if (File.Exists(FilePath))
-            {
-                var list = JsonSerializer.Deserialize<List<Profile>>(File.ReadAllText(FilePath));
-                foreach (var p in list ?? new List<Profile>()) store.Profiles.Add(p);
-            }
-        }
-        catch (Exception)
-        {
-            // Corrupt profiles.json: start empty rather than crash. Cookies stay safe in WebView2Data.
-        }
+        var list = SafeFile.Read(FilePath, json => JsonSerializer.Deserialize<List<Profile>>(json));
+        foreach (var p in list ?? new List<Profile>()) store.Profiles.Add(p);
         return store;
     }
 
-    public void Save()
+    // False if the disk write failed (full disk, locked file); the in-memory profiles are unaffected.
+    public bool Save()
     {
-        Directory.CreateDirectory(Root);
-        File.WriteAllText(FilePath, JsonSerializer.Serialize(Profiles, new JsonSerializerOptions { WriteIndented = true }));
+        try
+        {
+            SafeFile.Write(FilePath, JsonSerializer.Serialize(Profiles, new JsonSerializerOptions { WriteIndented = true }));
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 }
