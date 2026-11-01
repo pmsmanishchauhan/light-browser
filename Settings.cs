@@ -29,7 +29,12 @@ public class AppSettings
     public static Func<long> InstalledMemoryBytes { get; set; } = () => GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
 
     // True when the profile panel on the left is hidden to give the page more room (Ctrl+B).
-    public bool SidebarCollapsed { get; set; }
+    // The panel starts hidden (a profile chip and the quick switcher, Ctrl+K, take its place).
+    public bool SidebarCollapsed { get; set; } = true;
+
+    // True once someone has shown or hidden the panel themselves. Until then it always starts hidden, so a settings
+    // file written by an earlier version (which saved "shown" as the default) does not keep it open.
+    public bool SidebarSetByUser { get; set; }
 
     // Blocks requests to known ad and tracker domains (see RequestBlocker). Toggled from the toolbar.
     public bool BlockTrackers { get; set; } = true;
@@ -85,6 +90,7 @@ public class AppSettings
             settings = new AppSettings();   // unreadable settings: use the defaults
         }
         settings.BrowserArguments ??= "";
+        if (!settings.SidebarSetByUser) settings.SidebarCollapsed = true;
         if (!settings.SearchEngineSetByUser || !SearchEngines.IsKnown(settings.SearchEngine)) settings.SearchEngine = SearchEngines.DefaultId;
         if (settings.Mode != Custom && !Presets.ContainsKey(settings.Mode)) settings.Mode = Balanced;
         settings.MaxLoadedTabs = Math.Clamp(settings.MaxLoadedTabs, 1, 500);

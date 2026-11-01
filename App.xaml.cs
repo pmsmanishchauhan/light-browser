@@ -23,6 +23,20 @@ public partial class App : Application
             new SiteCheckWindow(args[at + 1], args[at + 2]).Show();
             return;
         }
+        var selfTest = Array.IndexOf(args, "--check-youtube-selftest");
+        if (selfTest >= 0 && args.Length >= selfTest + 2)
+        {
+            new YouTubeSelfTestWindow(args[selfTest + 1]).Show();
+            return;
+        }
+        var yt = Array.IndexOf(args, "--check-youtube");
+        if (yt >= 0 && args.Length >= yt + 3)
+        {
+            var secondsAt = Array.IndexOf(args, "--seconds");
+            var seconds = secondsAt >= 0 && secondsAt + 1 < args.Length && int.TryParse(args[secondsAt + 1], out var s) ? s : 45;
+            new YouTubeProbeWindow(args[yt + 1], args[yt + 2], !args.Contains("--no-block"), seconds).Show();
+            return;
+        }
 
         // One instance per data folder. After an update the old copy may still be closing, so wait for it.
         var wait = args.Contains(Updater.WaitForPreviousArgument) ? TimeSpan.FromSeconds(20) : TimeSpan.Zero;
@@ -47,9 +61,7 @@ public partial class App : Application
         if (MainWindow is not { } w) return;
         if (w.WindowState == WindowState.Minimized) w.WindowState = WindowState.Normal;
         w.Show();
-        w.Activate();
-        w.Topmost = true;    // the usual way to get past the "stolen focus" rules...
-        w.Topmost = false;   // ...without staying on top
+        w.Activate();   // the second launch allowed this (AllowSetForegroundWindow), so it really comes to the front
     }
 
     // An error in a button handler or timer: log it, save the open tabs, and keep going, unless they keep coming.

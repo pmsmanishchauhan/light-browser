@@ -83,6 +83,7 @@ public class WinFind {
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll")] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);   // minimised? (UI Automation reports this unreliably)
     [DllImport("user32.dll")] static extern IntPtr PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
     public static void Click(IntPtr h) { PostMessage(h, 0xF5, IntPtr.Zero, IntPtr.Zero); }   // BM_CLICK, for plain Win32 message boxes
     public static IntPtr Find(uint pid, string title) {
@@ -153,6 +154,9 @@ try {
     $profiles += @{ Id = 'e2effffffffff'; Name = 'Client F (direct)'; Color = '#2BB5B5'; HomeUrls = @("$origin/whoami?p=F"); OpenUrls = @(); Group = ''; Notes = ''; IsDeleted = $false }
     ConvertTo-Json -InputObject $profiles -Depth 5 | Set-Content (Join-Path $home1 'profiles.json') -Encoding utf8
     "# test list`r`ntracker.test" | Set-Content (Join-Path $home1 'blocklist.txt') -Encoding ascii   # blocked in phase 8
+    # The profile panel starts hidden by default; these checks drive it, so start with it shown (phase 12 checks the default).
+    $panelShown = '"SidebarCollapsed": false, "SidebarSetByUser": true'
+    "{ $panelShown }" | Set-Content (Join-Path $home1 'settings.json') -Encoding utf8
 
     '1. Two profiles, same site, different accounts, at the same time'
     Start-App                      # profile A opens first and runs its home page (login, then redirect)
@@ -180,7 +184,7 @@ try {
     Stop-App
 
     '3. Resource limit (1 loaded tab) does not log anyone out'
-    '{ "MaxLoadedTabs": 1, "IdleMinutes": 60, "GraceSeconds": 0 }' | Set-Content (Join-Path $home1 'settings.json') -Encoding utf8
+    "{ `"MaxLoadedTabs`": 1, `"IdleMinutes`": 60, `"GraceSeconds`": 0, $panelShown }" | Set-Content (Join-Path $home1 'settings.json') -Encoding utf8
     Remove-Item $log -ErrorAction SilentlyContinue
     Start-App                      # A loaded
     Select-Profile 1               # B loaded, A unloaded (cap)
@@ -207,7 +211,7 @@ try {
 
     '5. Modes (Low RAM / Balanced / Fast)'
     Stop-App
-    '{ "Mode": "Balanced" }' | Set-Content (Join-Path $home1 'settings.json') -Encoding utf8
+    "{ `"Mode`": `"Balanced`", $panelShown }" | Set-Content (Join-Path $home1 'settings.json') -Encoding utf8
     Remove-Item $log -ErrorAction SilentlyContinue
     Start-App                       # profile A: 1 tab
     Select-Profile 2                # profile C: 4 home pages, all loaded
@@ -348,12 +352,12 @@ try {
     $win = Main-Win
     $win.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Minimized)
     Start-Sleep 1
-    Check 'the window is minimised before the second launch' ((Main-Win).GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Current.WindowVisualState -eq 'Minimized')
+    Check 'the window is minimised before the second launch' ([WinFind]::IsIconic($script:app.MainWindowHandle))
     $second = Start-Process $Exe -PassThru
     Start-Sleep 6
     Check 'a second launch on the same data folder exits by itself' $second.HasExited
     Check 'the first copy is still running' (-not $script:app.HasExited)
-    Check 'the second launch brought the first window back from minimised' ((Main-Win).GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Current.WindowVisualState -ne 'Minimized')
+    Check 'the second launch brought the first window back from minimised' (-not [WinFind]::IsIconic($script:app.MainWindowHandle))
     Check 'profiles.json is intact' (@((Get-Content (Join-Path $home1 'profiles.json') -Raw | ConvertFrom-Json) | ForEach-Object { $_ }).Count -ge 6)
     $otherHome = Join-Path $env:TEMP ('lb-e2e-other-' + [guid]::NewGuid().ToString('N'))
     New-Item $otherHome -ItemType Directory | Out-Null
@@ -401,6 +405,43 @@ try {
     $t = Get-Date
     while (((Get-Date) - $t).TotalSeconds -lt 30 -and @(Get-Content $plog | Where-Object { $_ -like 'GET http://ota.test/whoami?p=E *' }).Count -le $before) { Start-Sleep 1 }
     Check 'opening it again starts the engine and loads through the proxy' ((Proxy-Engines) -ge 1 -and @(Get-Content $plog | Where-Object { $_ -like 'GET http://ota.test/whoami?p=E *' }).Count -gt $before)
+
+    '12. The profile panel starts hidden by default'
+    function Panel-Hidden { ($null -eq (Find-ById (Main-Win) 'SearchBox')) -and ($null -ne (Find-ByName (Main-Win) 'Switch profile')) }
+    $settingsFile = Join-Path $home1 'settings.json'
+    Stop-App
+    Remove-Item $settingsFile
+    Start-App
+    Check 'a first run (no settings file) starts with the panel hidden and the profile chip shown' (Panel-Hidden)
+    Check 'the default is written as "not chosen by the user"' (((Get-Content $settingsFile -Raw | ConvertFrom-Json).SidebarSetByUser) -eq $false)
+    Stop-App
+    '{ "SidebarCollapsed": false }' | Set-Content $settingsFile -Encoding utf8     # as an older version saved it: shown, but never chosen
+    Start-App
+    Check 'an older settings file that merely defaulted to "shown" starts hidden too' (Panel-Hidden)
+    (Find-ByName (Main-Win) 'Toggle profile panel').GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+    Start-Sleep 2
+    Check 'showing the panel yourself works' ($null -ne (Find-ById (Main-Win) 'SearchBox'))
+    Stop-App
+    Start-App
+    Check 'a panel you opened yourself stays open after a restart' ($null -ne (Find-ById (Main-Win) 'SearchBox'))
+
+    '13. The YouTube ad script, checked offline against made-up YouTube data and a made-up player'
+    Stop-App
+    $stHome = Join-Path $env:TEMP ('lb-e2e-yts-' + [guid]::NewGuid().ToString('N'))
+    New-Item $stHome -ItemType Directory | Out-Null
+    $stOut = Join-Path $stHome 'selftest.json'
+    $env:LIGHTBROWSER_HOME = $stHome
+    $st = Start-Process $Exe -ArgumentList '--check-youtube-selftest', "`"$stOut`"" -PassThru
+    $t = Get-Date
+    while (-not $st.HasExited -and ((Get-Date) - $t).TotalSeconds -lt 90) { Start-Sleep 1 }
+    if (-not $st.HasExited) { $st.Kill() }
+    $env:LIGHTBROWSER_HOME = $home1
+    $stRows = if (Test-Path $stOut) { @(Get-Content $stOut -Raw | ConvertFrom-Json | ForEach-Object { $_ }) } else { @() }
+    Check 'the self-test ran and reported' ($stRows.Count -ge 20) ("rows: $($stRows.Count)")
+    foreach ($row in $stRows) { Check ("YouTube script: " + $row.Name) $row.Ok $row.Detail }
+    Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -like "*$stHome*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep 2
+    Remove-Item $stHome -Recurse -Force -ErrorAction SilentlyContinue
 }
 finally {
     Stop-App

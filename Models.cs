@@ -154,6 +154,9 @@ public class BrowserTab : INotifyPropertyChanged
 
     public string? PendingUrl { get; set; }
 
+    // Id of the YouTube ad script registered for this tab's current page engine, so the Blocking button can remove it.
+    public string? AdScriptId { get; set; }
+
     // The site's icon, shown on the tab. Kept while the tab is unloaded.
     ImageSource? _favicon;
     public ImageSource? Favicon

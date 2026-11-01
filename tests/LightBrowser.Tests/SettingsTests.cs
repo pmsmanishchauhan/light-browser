@@ -75,15 +75,39 @@ public class SettingsTests : DataFolderTest
     }
 
     [Fact]
-    public void The_profile_panel_is_shown_by_default_and_a_hidden_panel_is_remembered()
+    public void The_profile_panel_is_hidden_by_default_and_a_choice_made_in_the_app_is_remembered()
     {
-        Assert.False(AppSettings.Load().SidebarCollapsed);
+        Assert.True(AppSettings.Load().SidebarCollapsed);
 
         var s = AppSettings.Load();
-        s.SidebarCollapsed = true;
+        s.SidebarCollapsed = false;      // the user opens it...
+        s.SidebarSetByUser = true;
         s.Save();
+        Assert.False(AppSettings.Load().SidebarCollapsed);
+
+        s.SidebarCollapsed = true;       // ...and hides it again
+        s.Save();
+        Assert.True(AppSettings.Load().SidebarCollapsed);
+    }
+
+    [Theory]
+    [InlineData("{ \"SidebarCollapsed\": false }")]                                    // an older file: "shown" was only the default
+    [InlineData("{ \"SidebarCollapsed\": false, \"SidebarSetByUser\": false }")]
+    [InlineData("{ \"Mode\": \"Balanced\" }")]
+    [InlineData("{}")]
+    public void A_settings_file_where_nobody_chose_starts_with_the_panel_hidden(string json)
+    {
+        File.WriteAllText(SettingsFile, json);
 
         Assert.True(AppSettings.Load().SidebarCollapsed);
+    }
+
+    [Fact]
+    public void A_panel_the_user_left_open_stays_open()
+    {
+        File.WriteAllText(SettingsFile, "{ \"SidebarCollapsed\": false, \"SidebarSetByUser\": true }");
+
+        Assert.False(AppSettings.Load().SidebarCollapsed);
     }
 
     [Fact]

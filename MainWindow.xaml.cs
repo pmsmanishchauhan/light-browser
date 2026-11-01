@@ -208,6 +208,28 @@ RefreshView();
         _settings.BlockTrackers = !_settings.BlockTrackers;
         _settings.Save();
         UpdateBlockButton();
+        // YouTube ad blocking follows the same switch; pages already open apply it from their next load.
+        foreach (var tab in _store.Profiles.SelectMany(p => p.Tabs).Where(t => t.View?.CoreWebView2 != null).ToList())
+            _ = SetYouTubeAdBlockAsync(tab, tab.View!.CoreWebView2);
+    }
+
+    // Adds or removes the YouTube ad script for new pages in this tab, to match the Blocking switch.
+    async Task SetYouTubeAdBlockAsync(BrowserTab tab, CoreWebView2 web)
+    {
+        try
+        {
+            if (_settings.BlockTrackers && tab.AdScriptId == null)
+                tab.AdScriptId = await web.AddScriptToExecuteOnDocumentCreatedAsync(YouTubeAds.Script);
+            else if (!_settings.BlockTrackers && tab.AdScriptId != null)
+            {
+                web.RemoveScriptToExecuteOnDocumentCreated(tab.AdScriptId);
+                tab.AdScriptId = null;
+            }
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write("YouTube ad script", ex);   // blocking is best-effort; a failure must not stop the page
+        }
     }
 
     // "Blocking 12" while on (the number is requests blocked since the app started), dim "Blocking off" otherwise.
@@ -217,7 +239,7 @@ RefreshView();
         BlockBtn.Content = on ? (_blocker.Blocked > 0 ? $"Blocking {_blocker.Blocked}" : "Blocking") : "Blocking off";
         BlockBtn.Foreground = (Brush)FindResource(on ? "TextBrush" : "FaintBrush");
         BlockBtn.ToolTip = on
-            ? $"Ad and tracker blocking is on ({_blocker.Count} domains, {_blocker.Blocked} requests blocked). Click to turn off. Add your own domains in {RequestBlocker.FilePath}"
+            ? $"Ad and tracker blocking is on ({_blocker.Count} domains, {_blocker.Blocked} requests blocked), including YouTube ads. Click to turn off. Add your own domains in {RequestBlocker.FilePath}"
             : "Ad and tracker blocking is off. Click to turn on.";
     }
 
@@ -857,6 +879,8 @@ RefreshView();
         // window.close() from a popup (e.g. a login window finishing) closes its tab.
         web.WindowCloseRequested += (_, _) => Dispatcher.InvokeAsync(() => CloseTabAsync(tab));
 
+        await SetYouTubeAdBlockAsync(tab, web);
+
         // The WPF control hides the controller's key events, so the page reports Ctrl+T/W/L/K itself.
         await web.AddScriptToExecuteOnDocumentCreatedAsync(ShortcutScript);
         web.WebMessageReceived += (_, args) =>
@@ -1148,6 +1172,7 @@ RefreshView();
     void ToggleSidebar()
     {
         _settings.SidebarCollapsed = !_settings.SidebarCollapsed;
+        _settings.SidebarSetByUser = true;
         _settings.Save();
         SwitcherPopup.IsOpen = false;
         ApplySidebar();

@@ -47,8 +47,13 @@ public sealed class SingleInstance : IDisposable
         return new SingleInstance(id, mutex);
     }
 
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern bool AllowSetForegroundWindow(int processId);
+
     static void Wake(string id)
     {
+        // This process was just started by the user, so Windows lets it hand the foreground to the first instance.
+        try { AllowSetForegroundWindow(-1); } catch (Exception) { }
         try { using var w = EventWaitHandle.OpenExisting(WakeName(id)); w.Set(); }
         catch (Exception) { }   // the first instance is not listening yet or just left
     }
