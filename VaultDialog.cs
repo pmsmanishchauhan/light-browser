@@ -28,8 +28,8 @@ public class VaultDialog : Window
         _entries = PasswordVault.Load(profileId);
         Title = $"Passwords - {profileName}";
         Width = 560;
-        Height = 560;
-        MinHeight = 420;
+        Height = Ui.FitHeight(560);
+        MinHeight = Math.Min(420, Height);
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = new SolidColorBrush(Color.FromRgb(0x25, 0x26, 0x2B));
         Foreground = Fg;

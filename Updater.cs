@@ -200,9 +200,12 @@ public static class Updater
         try { File.Delete(exePath + ".new"); } catch (Exception) { }
     }
 
+    // The restarted app waits for the old one to finish closing before it takes the single-instance lock.
+    public const string WaitForPreviousArgument = "--wait-for-previous";
+
     // Starts the app again once this process has exited (so the two never share the data folder).
     public static void RestartAfterExit(string exePath) =>
-        Process.Start(new ProcessStartInfo("cmd.exe", $"/c ping -n 3 127.0.0.1 >nul & start \"\" \"{exePath}\"")
+        Process.Start(new ProcessStartInfo("cmd.exe", $"/c ping -n 3 127.0.0.1 >nul & start \"\" \"{exePath}\" {WaitForPreviousArgument}")
         {
             CreateNoWindow = true, UseShellExecute = false,
         });

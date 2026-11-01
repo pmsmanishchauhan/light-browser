@@ -124,7 +124,7 @@ public class ProfileDialog : Window
         var buttons = new StackPanel
         {
             Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right,
-            Margin = new Thickness(0, 16, 0, 0),
+            Margin = new Thickness(18, 10, 18, 18),
         };
         buttons.Children.Add(ok);
         buttons.Children.Add(cancel);
@@ -164,8 +164,15 @@ public class ProfileDialog : Window
         panel.Children.Add(proxyLogin);
         panel.Children.Add(Label("Notes (optional, shown on hover)", 12));
         panel.Children.Add(_notes);
-        panel.Children.Add(buttons);
-        Content = panel;
+
+        // The form scrolls when the screen is short; Save and Cancel stay pinned at the bottom.
+        var scroll = new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        var root = new DockPanel();
+        DockPanel.SetDock(buttons, Dock.Bottom);
+        root.Children.Add(buttons);
+        root.Children.Add(scroll);
+        Content = root;
+        MaxHeight = Ui.MaxDialogHeight;
 
         _group.TextChanged += (_, _) => { RebuildGroupChips(); RebuildNameChips(); };
         _urls.TextChanged += (_, _) => RebuildNameChips();

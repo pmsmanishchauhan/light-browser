@@ -84,6 +84,10 @@ RefreshView();
             if (first != null) ProfileList.SelectedItem = first;
             UpdateEmptyState();
             UpdateStats();
+
+            // Test hook: lets an end-to-end run check that an unhandled error is logged and survived.
+            if (Environment.GetEnvironmentVariable("LIGHTBROWSER_TEST_THROW") == "1")
+                _ = Dispatcher.BeginInvoke(new Action(() => throw new InvalidOperationException("test error from LIGHTBROWSER_TEST_THROW")));
         };
     }
 
@@ -247,6 +251,13 @@ RefreshView();
         foreach (var p in _store.Profiles) CaptureSession(p);
         _store.Save();
         _dirty = false;
+    }
+
+    // Used by the crash handler: saves the open tabs, and never throws.
+    public void SaveSessionSafely()
+    {
+        try { SaveSession(); }
+        catch (Exception ex) { CrashLog.Write("saving the session after an error", ex); }
     }
 
     void AutoSave()
@@ -969,6 +980,34 @@ RefreshView();
             tab.View.Dispose();
         }
         if (p.Active == tab) p.Active = null;
+        ReleaseUnusedProxyEngines();
+    }
+
+    // A proxy's browser engine only runs while some tab uses it. When the last loaded tab of every profile on a
+    // proxy is gone, the engine is let go so its browser processes exit and free their memory. It starts again
+    // the next time a tab on that proxy loads.
+    bool _gcQueued;
+
+    void ReleaseUnusedProxyEngines()
+    {
+        if (_proxyEnvs.Count == 0) return;
+        var inUse = _store.Profiles
+            .Where(p => p.ProxySpec != null && p.Tabs.Any(t => t.View != null))
+            .Select(p => p.ProxySpec!.Server)
+            .ToHashSet();
+        var unused = _proxyEnvs.Keys.Where(k => !inUse.Contains(k)).ToList();
+        if (unused.Count == 0) return;
+        foreach (var key in unused) _proxyEnvs.Remove(key);
+
+        if (_gcQueued) return;
+        _gcQueued = true;   // the engine's handle is released when the .NET wrapper around it is collected
+        _ = Dispatcher.BeginInvoke(new Action(() =>
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            _gcQueued = false;
+        }), System.Windows.Threading.DispatcherPriority.Background);
     }
 
     async Task CloseTabAsync(BrowserTab tab)
@@ -1056,6 +1095,7 @@ RefreshView();
         tab.IsLoading = false;
         WebHost.Children.Remove(view);
         view.Dispose();
+        ReleaseUnusedProxyEngines();
     }
 
     // Hidden tabs ask WebView2 to trim their caches; not supported by very old runtimes, so ignore failures.

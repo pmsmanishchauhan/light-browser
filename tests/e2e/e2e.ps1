@@ -83,6 +83,8 @@ public class WinFind {
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll")] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] static extern IntPtr PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+    public static void Click(IntPtr h) { PostMessage(h, 0xF5, IntPtr.Zero, IntPtr.Zero); }   // BM_CLICK, for plain Win32 message boxes
     public static IntPtr Find(uint pid, string title) {
         IntPtr found = IntPtr.Zero;
         EnumWindows((h, x) => { uint p; GetWindowThreadProcessId(h, out p); if (p == pid && IsWindowVisible(h)) { var s = new StringBuilder(256); GetWindowText(h, s, 256); if (s.ToString() == title) { found = h; return false; } } return true; }, IntPtr.Zero);
@@ -341,6 +343,64 @@ try {
     Check "F connected directly to the site" ((Requests '/whoami?p=F|*').Count -ge 1)
     Check "F's traffic did not go through E's proxy" (@(Get-Content $plog | Where-Object { $_ -like '*p=F*' }).Count -eq 0)
     Check 'the proxy never saw the site that F visited' (@(Get-Content $plog | Where-Object { $_ -like "*localhost:$port*" }).Count -eq 0)
+
+    '9. Only one copy per data folder'
+    $win = Main-Win
+    $win.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Minimized)
+    Start-Sleep 1
+    Check 'the window is minimised before the second launch' ((Main-Win).GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Current.WindowVisualState -eq 'Minimized')
+    $second = Start-Process $Exe -PassThru
+    Start-Sleep 6
+    Check 'a second launch on the same data folder exits by itself' $second.HasExited
+    Check 'the first copy is still running' (-not $script:app.HasExited)
+    Check 'the second launch brought the first window back from minimised' ((Main-Win).GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Current.WindowVisualState -ne 'Minimized')
+    Check 'profiles.json is intact' (@((Get-Content (Join-Path $home1 'profiles.json') -Raw | ConvertFrom-Json) | ForEach-Object { $_ }).Count -ge 6)
+    $otherHome = Join-Path $env:TEMP ('lb-e2e-other-' + [guid]::NewGuid().ToString('N'))
+    New-Item $otherHome -ItemType Directory | Out-Null
+    $env:LIGHTBROWSER_HOME = $otherHome
+    $third = Start-Process $Exe -PassThru
+    Start-Sleep 9
+    Check 'a different data folder is a separate instance and runs alongside' (-not $third.HasExited)
+    if (-not $third.HasExited) { $third.Kill() }
+    Start-Sleep 2
+    $env:LIGHTBROWSER_HOME = $home1
+    Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -like "*$otherHome*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep 1
+    Remove-Item $otherHome -Recurse -Force -ErrorAction SilentlyContinue
+
+    '10. An unexpected error is logged and survived'
+    Stop-App
+    $env:LIGHTBROWSER_TEST_THROW = '1'
+    Remove-Item (Join-Path $home1 'crash.log') -ErrorAction SilentlyContinue
+    $script:app = Start-Process $Exe -PassThru
+    $err = Wait-Window 'LightBrowser - unexpected error' 25
+    Check 'a dialog tells you about the error' ($null -ne $err)
+    if ($err) { [WinFind]::Click([IntPtr](Find-ByName $err 'OK').Current.NativeWindowHandle); Start-Sleep 2 }
+    $env:LIGHTBROWSER_TEST_THROW = $null
+    $crashLog = Join-Path $home1 'crash.log'
+    Check 'the error was written to crash.log' ((Test-Path $crashLog) -and ((Get-Content $crashLog -Raw) -match 'test error from LIGHTBROWSER_TEST_THROW') -and ((Get-Content $crashLog -Raw) -match 'UI thread'))
+    Start-Sleep 3
+    $script:app.Refresh()
+    Check 'the app kept running and answers' (-not $script:app.HasExited -and $script:app.Responding)
+    Stop-App
+
+    '11. A proxy engine is released when its last profile closes'
+    Start-App
+    Select-Profile 4                # Client E: starts its own engine
+    function Proxy-Engines { @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -like "*$home1*" -and $_.CommandLine -like '*WebView2Data-px-*' -and $_.CommandLine -notlike '*--type=*' }).Count }
+    Check 'the proxy engine is running while E is open' ((Proxy-Engines) -ge 1) (Proxy-Engines)
+    $before = @(Get-Content $plog | Where-Object { $_ -like 'GET http://ota.test/whoami?p=E *' }).Count
+    Invoke-Async (Find-ByName (Main-Win) 'Launch site...')
+    $launch = Wait-Window 'Launch site in profiles'
+    Check 'the Launch dialog opens with the open profile ticked' ($null -ne $launch)
+    Invoke-Async (Find-ByName $launch 'Close selected')
+    $t = Get-Date
+    while (((Get-Date) - $t).TotalSeconds -lt 40 -and (Proxy-Engines) -gt 0) { Start-Sleep 2 }
+    Check 'closing the profile ended the proxy engine' ((Proxy-Engines) -eq 0) (Proxy-Engines)
+    Select-Profile 4                # open E again
+    $t = Get-Date
+    while (((Get-Date) - $t).TotalSeconds -lt 30 -and @(Get-Content $plog | Where-Object { $_ -like 'GET http://ota.test/whoami?p=E *' }).Count -le $before) { Start-Sleep 1 }
+    Check 'opening it again starts the engine and loads through the proxy' ((Proxy-Engines) -ge 1 -and @(Get-Content $plog | Where-Object { $_ -like 'GET http://ota.test/whoami?p=E *' }).Count -gt $before)
 }
 finally {
     Stop-App

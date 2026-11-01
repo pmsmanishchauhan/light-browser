@@ -22,8 +22,8 @@ public class LaunchDialog : Window
     {
         Title = "Launch site in profiles";
         Width = 460;
-        Height = 620;
-        MinHeight = 480;
+        Height = Ui.FitHeight(620);
+        MinHeight = Math.Min(480, Height);
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = new SolidColorBrush(Color.FromRgb(0x25, 0x26, 0x2B));
         Foreground = Fg;

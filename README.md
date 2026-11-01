@@ -25,6 +25,9 @@ It is a thin shell (a few MB) around the Microsoft Edge WebView2 engine that shi
 - Ad and tracker blocking, per-profile proxy: see the sections below.
 - Update button (bottom of the profile panel): checks GitHub only when you click it. See "Updates".
 - App icon: drawn by `tools\make-icon.ps1`, which writes `assets\icon.ico` and `assets\logo.png`.
+- One copy per data folder: starting the app a second time brings the first window forward instead of opening a second copy that could overwrite your profiles.
+- Errors do not close the app: an unexpected error is written to `crash.log` in the data folder, your open tabs are saved, and the app keeps running (it closes, after saving, only if errors keep coming).
+- Dialogs fit small screens: the profile dialog scrolls (Save and Cancel stay in view) and the other dialogs never grow taller than the screen.
 
 ## OTA portals
 
@@ -67,7 +70,7 @@ Each profile can send all its traffic through its own proxy, so each client acco
 
 - If the proxy is down, pages do not load. They never fall back to your own connection.
 - A proxied engine is started with Chromium's switch that stops WebRTC sending UDP outside the proxy (set, but not yet checked against a leak-test site).
-- The proxy is an engine-wide setting, so every distinct proxy runs its own browser engine and data folder (`WebView2Data-px-...`). Profiles without a proxy share the normal engine. Each extra proxy costs one more set of browser processes (memory not measured yet), so many profiles on the same proxy share one, while many different proxies add up.
+- The proxy is an engine-wide setting, so every distinct proxy runs its own browser engine and data folder (`WebView2Data-px-...`). Profiles without a proxy share the normal engine. Each extra proxy costs one more set of browser processes (memory not measured yet), so many profiles on the same proxy share one, while many different proxies add up. A proxy's engine only runs while one of its tabs is loaded: when the last one is closed or unloaded the engine's processes exit, and they start again when a tab on that proxy loads (checked in the end-to-end test).
 - A profile's logins stay with the proxy they were made through. Changing a profile's proxy asks first, then signs it out of every site (saved passwords in the password list are kept).
 - A duplicated profile does not copy the proxy, so two accounts do not end up on the same IP by accident.
 - Addresses on your own machine (localhost) bypass the proxy, as in Chrome.

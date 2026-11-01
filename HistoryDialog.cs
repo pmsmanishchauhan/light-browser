@@ -23,8 +23,8 @@ public class HistoryDialog : Window
         _profileId = profileId;
         Title = $"History - {profileName}";
         Width = 640;
-        Height = 560;
-        MinHeight = 380;
+        Height = Ui.FitHeight(560);
+        MinHeight = Math.Min(380, Height);
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = new SolidColorBrush(Color.FromRgb(0x25, 0x26, 0x2B));
         Foreground = Fg;

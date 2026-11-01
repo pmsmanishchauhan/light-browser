@@ -20,7 +20,7 @@ public class OtaPickerDialog : Window
     public OtaPickerDialog(IEnumerable<string> alreadyAdded, bool single = false)
     {
         Title = single ? "Choose an OTA portal" : "Add OTA portals";
-        Width = 480; Height = 620; MinHeight = 420;
+        Width = 480; Height = Ui.FitHeight(620); MinHeight = Math.Min(420, Height);
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = new SolidColorBrush(Color.FromRgb(0x25, 0x26, 0x2B));
         Foreground = Fg;
