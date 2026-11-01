@@ -50,6 +50,18 @@ public class SettingsTests : DataFolderTest
     }
 
     [Fact]
+    public void The_profile_panel_is_shown_by_default_and_a_hidden_panel_is_remembered()
+    {
+        Assert.False(AppSettings.Load().SidebarCollapsed);
+
+        var s = AppSettings.Load();
+        s.SidebarCollapsed = true;
+        s.Save();
+
+        Assert.True(AppSettings.Load().SidebarCollapsed);
+    }
+
+    [Fact]
     public void Custom_mode_uses_the_numbers_in_the_file()
     {
         File.WriteAllText(SettingsFile, "{ \"Mode\": \"Custom\", \"MaxLoadedTabs\": 9, \"IdleMinutes\": 4, \"GraceSeconds\": 7 }");

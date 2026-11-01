@@ -199,19 +199,19 @@ try {
     Start-App                       # profile A: 1 tab
     Select-Profile 2                # profile C: 4 home pages, all loaded
     $stats = Get-Stats
-    Check 'Balanced mode shows 5 of 5 tabs loaded' ($stats -like 'Balanced: 5 of 5*') $stats
+    Check 'Balanced mode shows 5 of 5 tabs loaded' ($stats -like 'Balanced | 5/5 tabs*') $stats
     Click-Button 'Low RAM'
     Check 'choosing Low RAM is saved to settings.json at once' ((Settings-Mode) -eq 'LowMemory') (Settings-Mode)
     Start-Sleep -Seconds 4          # an explicit mode change trims at once (no waiting for the idle timer)
     $stats = Get-Stats
-    Check 'Low RAM unloaded tabs down to its limit of 2, live, without a restart' ($stats -like 'Low RAM: 2 of 2 tabs loaded*') $stats
+    Check 'Low RAM unloaded tabs down to its limit of 2, live, without a restart' ($stats -like 'Low RAM | 2/2 tabs*') $stats
     Check 'unloading did not trigger any login or reload' ((Requests '/login*').Count -eq 0)
     Click-Button 'Fast'
     Check 'choosing Fast is saved' ((Settings-Mode) -eq 'Performance') (Settings-Mode)
-    Check 'Fast shows its higher limit' ((Get-Stats) -like 'Fast: * of 15 tabs loaded*') (Get-Stats)
+    Check 'Fast shows its higher limit' ((Get-Stats) -like 'Fast | */15 tabs*') (Get-Stats)
     Stop-App
     Start-App
-    Check 'the chosen mode is remembered after a restart' ((Get-Stats) -like 'Fast:*') (Get-Stats)
+    Check 'the chosen mode is remembered after a restart' ((Get-Stats) -like 'Fast |*') (Get-Stats)
 
     '6. Password vault: add a login, fill the page, per-profile isolation'
     Remove-Item $log -ErrorAction SilentlyContinue
@@ -250,6 +250,26 @@ try {
     Invoke-Async (Find-ByName ([System.Windows.Automation.AutomationElement]::FromHandle($script:app.MainWindowHandle)) 'Passwords')
     $other = Wait-Window 'Passwords - Client A (alice)'
     Check "another profile's password list is empty" ($null -ne $other -and (Find-ByName $other 'No passwords yet. Click Add...'))
+    (Find-ByName $other 'Close').GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+    Start-Sleep 1
+
+    '7. Hide and show the profile panel'
+    function Main-Win { [System.Windows.Automation.AutomationElement]::FromHandle($script:app.MainWindowHandle) }
+    function Find-ById($root, $id) { $root.FindFirst('Descendants', (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, $id))) }
+    function Sidebar-Collapsed { (Get-Content (Join-Path $home1 'settings.json') -Raw | ConvertFrom-Json).SidebarCollapsed }
+    Check 'the profile panel is visible at first' ($null -ne (Find-ById (Main-Win) 'SearchBox'))
+    (Find-ByName (Main-Win) 'Toggle profile panel').GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+    Start-Sleep 2
+    Check 'hiding it removes the panel and is saved' (($null -eq (Find-ById (Main-Win) 'SearchBox')) -and ((Sidebar-Collapsed) -eq $true))
+    $chip = Find-ByName (Main-Win) 'Switch profile'
+    $chipText = @($chip.FindAll('Descendants', (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text))) | ForEach-Object { $_.Current.Name })
+    Check 'a toolbar chip shows which profile is active' ($null -ne $chip -and ($chipText -join '|') -like '*Client A (alice)*') ($chipText -join '|')
+    Stop-App
+    Start-App
+    Check 'the hidden panel is remembered after a restart' (($null -eq (Find-ById (Main-Win) 'SearchBox')) -and ($null -ne (Find-ByName (Main-Win) 'Switch profile')))
+    (Find-ByName (Main-Win) 'Toggle profile panel').GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+    Start-Sleep 2
+    Check 'showing it again restores the panel' (($null -ne (Find-ById (Main-Win) 'SearchBox')) -and ((Sidebar-Collapsed) -eq $false))
 }
 finally {
     Stop-App

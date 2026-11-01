@@ -24,6 +24,9 @@ public class AppSettings
         [Performance] = new(15, 60, 120, false),
     };
 
+    // True when the profile panel on the left is hidden to give the page more room (Ctrl+B).
+    public bool SidebarCollapsed { get; set; }
+
     // LowMemory, Balanced, Performance, or Custom (uses the three numbers below).
     public string Mode { get; set; } = Balanced;
 

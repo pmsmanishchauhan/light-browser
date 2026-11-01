@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
@@ -38,6 +39,7 @@ public partial class MainWindow : Window
         _view.SortDescriptions.Add(new SortDescription(nameof(Profile.GroupName), ListSortDirection.Ascending));
         _view.SortDescriptions.Add(new SortDescription(nameof(Profile.Name), ListSortDirection.Ascending));
         ProfileList.ItemsSource = _view;
+        ApplySidebar();
         HighlightMode();
         RefreshView();
 
@@ -82,6 +84,7 @@ public partial class MainWindow : Window
     void UpdateEmptyState()
     {
         EmptyPanel.Visibility = _current == null ? Visibility.Visible : Visibility.Collapsed;
+        Toolbar.IsEnabled = _current != null;   // nothing to navigate until a profile is open
         EmptyNewBtn.Visibility = _showTrash ? Visibility.Collapsed : Visibility.Visible;
         EmptyState.Text = _showTrash
             ? "Trash\nRight-click a profile to restore it or delete it forever"
@@ -96,6 +99,11 @@ public partial class MainWindow : Window
         Title = _current == null ? "LightBrowser" : $"{_current.Name} - LightBrowser";
         ProfileBar.Background = _current?.Brush ?? Brushes.Transparent;
         Application.Current.Resources["AccentBrush"] = _current?.Brush ?? new SolidColorBrush(Color.FromRgb(0x4F, 0x8E, 0xF7));
+
+        // The toolbar chip shows the active profile while the left panel is hidden.
+        ChipName.Text = _current?.Name ?? "Choose profile";
+        ChipInitial.Text = _current?.Initial ?? "+";
+        ChipDot.Fill = _current?.Brush ?? new SolidColorBrush(Color.FromRgb(0x6B, 0x6E, 0x78));
     }
 
     // Back/forward enabled state and the loading bar follow the active tab.
@@ -616,6 +624,7 @@ public partial class MainWindow : Window
         web.Settings.IsGeneralAutofillEnabled = true;
         SetMemoryLevel(tab, visible: ActiveTab == tab);
 
+        web.FaviconChanged += async (_, _) => await UpdateFaviconAsync(tab, web);
         web.DocumentTitleChanged += (_, _) => _history.UpdateTitle(p.Id, web.Source, web.DocumentTitle);
         web.DocumentTitleChanged += (_, _) =>
             tab.Title = string.IsNullOrWhiteSpace(web.DocumentTitle) ? web.Source : web.DocumentTitle;
@@ -688,6 +697,31 @@ public partial class MainWindow : Window
             ? null
             : new CoreWebView2EnvironmentOptions { AdditionalBrowserArguments = _settings.BrowserArguments };
         return CoreWebView2Environment.CreateAsync(null, ProfileStore.DataDir, options);
+    }
+
+    // Shows the site's icon on its tab (a small 32 px copy, so it costs almost no memory).
+    static async Task UpdateFaviconAsync(BrowserTab tab, CoreWebView2 web)
+    {
+        try
+        {
+            using var stream = await web.GetFaviconAsync(CoreWebView2FaviconImageFormat.Png);
+            if (stream == null) { tab.Favicon = null; return; }
+            using var copy = new System.IO.MemoryStream();   // the engine's stream is not seekable
+            await stream.CopyToAsync(copy);
+            copy.Position = 0;
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.DecodePixelWidth = 32;
+            image.StreamSource = copy;
+            image.EndInit();
+            image.Freeze();
+            tab.Favicon = image;
+        }
+        catch (Exception)
+        {
+            // The tab was closed meanwhile, or the icon could not be decoded: keep the default globe.
+        }
     }
 
     static bool SameOrigin(string? a, string? b) =>
@@ -864,7 +898,9 @@ public partial class MainWindow : Window
     {
         var tabs = _store.Profiles.SelectMany(p => p.Tabs).ToList();
         var loaded = tabs.Count(t => t.View != null);
-        StatsText.Text = $"{ModeName()}: {loaded} of {_settings.Limits.MaxLoadedTabs} tabs loaded, {tabs.Count - loaded} unloaded\n{AppMemoryMb()} MB in use";
+        StatsText.Text = $"{ModeName()} | {loaded}/{_settings.Limits.MaxLoadedTabs} tabs loaded | {AppMemoryMb()} MB";
+        StatsText.ToolTip = $"{loaded} tabs loaded of {_settings.Limits.MaxLoadedTabs} allowed in {ModeName()} mode, " +
+                            $"{tabs.Count - loaded} unloaded. {AppMemoryMb()} MB used by this app and its browser processes.";
     }
 
     string ModeName() => _settings.Mode switch
@@ -876,6 +912,101 @@ public partial class MainWindow : Window
     };
 
     // ---- modes ----------------------------------------------------------------------------
+
+    // ---- profile panel: hide it for more room, switch profiles from the toolbar chip -------
+
+    void ApplySidebar()
+    {
+        var hidden = _settings.SidebarCollapsed;
+        SidebarColumn.Width = hidden ? new GridLength(0) : new GridLength(240);
+        Sidebar.Visibility = hidden ? Visibility.Collapsed : Visibility.Visible;
+        ProfileChip.Visibility = hidden ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    void ToggleSidebar()
+    {
+        _settings.SidebarCollapsed = !_settings.SidebarCollapsed;
+        _settings.Save();
+        SwitcherPopup.IsOpen = false;
+        ApplySidebar();
+    }
+
+    void SidebarToggle_Click(object sender, RoutedEventArgs e) => ToggleSidebar();
+
+    void ProfileChip_Click(object sender, RoutedEventArgs e) => OpenSwitcher();
+
+    // Ctrl+K: focus the search box, or, with the panel hidden, open the quick switcher under the chip.
+    void OpenSwitcher()
+    {
+        if (!_settings.SidebarCollapsed)
+        {
+            SearchBox.Focus();
+            SearchBox.SelectAll();
+            return;
+        }
+        SwitcherSearch.Text = "";
+        FillSwitcher();
+        SwitcherPopup.IsOpen = true;
+        Dispatcher.BeginInvoke(() => SwitcherSearch.Focus(), DispatcherPriority.Input);
+    }
+
+    void FillSwitcher()
+    {
+        var q = SwitcherSearch.Text.Trim();
+        var list = _store.Profiles
+            .Where(p => !p.IsDeleted && (q == "" || p.Name.Contains(q, StringComparison.OrdinalIgnoreCase)
+                                                 || p.Group.Contains(q, StringComparison.OrdinalIgnoreCase)))
+            .OrderBy(p => p.GroupName).ThenBy(p => p.Name)
+            .Take(60).ToList();
+        SwitcherList.ItemsSource = list;
+        SwitcherList.SelectedIndex = list.Count > 0 ? 0 : -1;
+    }
+
+    void Switcher_TextChanged(object sender, TextChangedEventArgs e) => FillSwitcher();
+
+    void Switcher_KeyDown(object sender, KeyEventArgs e)
+    {
+        switch (e.Key)
+        {
+            case Key.Down:
+                SwitcherList.SelectedIndex = Math.Min(SwitcherList.SelectedIndex + 1, SwitcherList.Items.Count - 1);
+                SwitcherList.ScrollIntoView(SwitcherList.SelectedItem);
+                e.Handled = true;
+                break;
+            case Key.Up:
+                SwitcherList.SelectedIndex = Math.Max(SwitcherList.SelectedIndex - 1, 0);
+                SwitcherList.ScrollIntoView(SwitcherList.SelectedItem);
+                e.Handled = true;
+                break;
+            case Key.Enter:
+                if (SwitcherList.SelectedItem is Profile p) PickProfile(p);
+                e.Handled = true;
+                break;
+            case Key.Escape:
+                SwitcherPopup.IsOpen = false;
+                e.Handled = true;
+                break;
+        }
+    }
+
+    void SwitcherList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is not DependencyObject source) return;
+        if (ItemsControl.ContainerFromElement(SwitcherList, source) is ListBoxItem { DataContext: Profile p })
+        {
+            PickProfile(p);
+            e.Handled = true;
+        }
+    }
+
+    void PickProfile(Profile p)
+    {
+        SwitcherPopup.IsOpen = false;
+        _showTrash = false;
+        SearchBox.Clear();   // so the hidden list is not filtered
+        RefreshView();
+        ProfileList.SelectedItem = p;   // works while the panel is hidden
+    }
 
     void Mode_Click(object sender, RoutedEventArgs e)
     {
@@ -898,7 +1029,12 @@ public partial class MainWindow : Window
     void HighlightMode()
     {
         foreach (var b in new[] { ModeLowBtn, ModeBalancedBtn, ModePerformanceBtn })
-            b.Background = (string)b.Tag == _settings.Mode ? new SolidColorBrush(Color.FromArgb(0x4D, 0xFF, 0xFF, 0xFF)) : Brushes.Transparent;
+        {
+            var on = (string)b.Tag == _settings.Mode;
+            b.Background = on ? (Brush)FindResource("RaisedBrush") : Brushes.Transparent;
+            b.Foreground = (Brush)FindResource(on ? "TextBrush" : "DimBrush");
+            b.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal;
+        }
     }
 
     long AppMemoryMb()
@@ -1031,7 +1167,7 @@ public partial class MainWindow : Window
         " if (window !== window.top) return;" +
         " if (!e.ctrlKey || e.altKey || e.shiftKey) return;" +
         " const k = e.key.toLowerCase();" +
-        " if (k === 't' || k === 'w' || k === 'l' || k === 'k' || k === 'h') { e.preventDefault(); window.chrome.webview.postMessage(k); }" +
+        " if (k === 't' || k === 'w' || k === 'l' || k === 'k' || k === 'h' || k === 'b') { e.preventDefault(); window.chrome.webview.postMessage(k); }" +
         "}, true);";
 
     bool HandleShortcut(char key)
@@ -1041,7 +1177,8 @@ public partial class MainWindow : Window
             case 't': _ = StartNewTabAsync(); return true;
             case 'w': if (ActiveTab is { } t) _ = CloseTabAsync(t); return true;
             case 'l': Address.Focus(); Address.SelectAll(); return true;
-            case 'k': SearchBox.Focus(); SearchBox.SelectAll(); return true;
+            case 'k': OpenSwitcher(); return true;
+            case 'b': ToggleSidebar(); return true;
             case 'h': _ = ShowHistoryAsync(_current); return true;
             default: return false;
         }
@@ -1056,7 +1193,7 @@ public partial class MainWindow : Window
             return;
         }
         if ((Keyboard.Modifiers & ModifierKeys.Control) == 0) return;
-        var key = e.Key switch { Key.T => 't', Key.W => 'w', Key.L => 'l', Key.K => 'k', Key.H => 'h', _ => '\0' };
+        var key = e.Key switch { Key.T => 't', Key.W => 'w', Key.L => 'l', Key.K => 'k', Key.H => 'h', Key.B => 'b', _ => '\0' };
         if (key != '\0' && HandleShortcut(key)) e.Handled = true;
     }
 }

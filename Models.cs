@@ -126,6 +126,14 @@ public class BrowserTab : INotifyPropertyChanged
 
     public string? PendingUrl { get; set; }
 
+    // The site's icon, shown on the tab. Kept while the tab is unloaded.
+    ImageSource? _favicon;
+    public ImageSource? Favicon
+    {
+        get => _favicon;
+        set { _favicon = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Favicon))); }
+    }
+
     // Last known address, kept so the tab can be restored even if its WebView2 died.
     public string? LastUrl { get; set; }
 

@@ -86,6 +86,8 @@ public class LaunchDialog : Window
         tools.Children.Add(_count);
 
         var open = Button("Open site", 90);
+        open.Background = new SolidColorBrush(Color.FromRgb(0x4F, 0x8E, 0xF7));
+        open.FontWeight = FontWeights.SemiBold;
         open.IsDefault = true;
         open.Click += (_, _) => Finish(LaunchAction.Open);
         var close = Button("Close selected", 110);

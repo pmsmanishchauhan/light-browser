@@ -70,6 +70,8 @@ public class ProfileDialog : Window
         Select(existing == null ? 0 : Math.Max(0, Array.FindIndex(Colors, c => c.Hex == existing.Color)));
 
         var ok = NewButton("Save");
+        ok.Background = new SolidColorBrush(Color.FromRgb(0x4F, 0x8E, 0xF7));
+        ok.FontWeight = FontWeights.SemiBold;
         ok.IsDefault = true;
         ok.Margin = new Thickness(0, 0, 8, 0);
         ok.Click += (_, _) =>
@@ -198,8 +200,9 @@ public class ProfileDialog : Window
         box.VerticalContentAlignment = VerticalAlignment.Top;
     }
 
+    // Field captions are quieter than the values so the dialog reads clearly.
     static TextBlock Label(string text, double top) =>
-        new() { Text = text, Foreground = Fg, Margin = new Thickness(0, top, 0, 0) };
+        new() { Text = text, Foreground = new SolidColorBrush(Color.FromRgb(0x9A, 0x9D, 0xA6)), FontSize = 12, Margin = new Thickness(0, top, 0, 0) };
 
     static Button NewButton(string text)
     {
