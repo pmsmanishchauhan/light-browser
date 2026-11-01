@@ -84,11 +84,30 @@ RefreshView();
             if (first != null) ProfileList.SelectedItem = first;
             UpdateEmptyState();
             UpdateStats();
+            _ = EnsureDesktopShortcutAsync();
 
             // Test hook: lets an end-to-end run check that an unhandled error is logged and survived.
             if (Environment.GetEnvironmentVariable("LIGHTBROWSER_TEST_THROW") == "1")
                 _ = Dispatcher.BeginInvoke(new Action(() => throw new InvalidOperationException("test error from LIGHTBROWSER_TEST_THROW")));
         };
+    }
+
+    // The shortcut work runs off the UI thread so a slow desktop (network or synced folder) cannot delay the window.
+    async Task EnsureDesktopShortcutAsync()
+    {
+        try
+        {
+            var offered = _settings.DesktopShortcutOffered;
+            var exe = Environment.ProcessPath;
+            var folder = DesktopShortcut.DesktopFolder();
+            var result = await Task.Run(() => DesktopShortcut.Ensure(offered, exe, folder));
+            if (result is DesktopShortcut.Outcome.Created or DesktopShortcut.Outcome.Present && !_settings.DesktopShortcutOffered)
+            {
+                _settings.DesktopShortcutOffered = true;
+                _settings.Save();
+            }
+        }
+        catch (Exception ex) { CrashLog.Write("desktop shortcut", ex); }
     }
 
     void UpdateEmptyState()

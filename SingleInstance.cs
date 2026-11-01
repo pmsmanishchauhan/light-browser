@@ -13,10 +13,22 @@ public sealed class SingleInstance : IDisposable
     readonly EventWaitHandle _wake;
     volatile bool _stop;
 
-    SingleInstance(string id, Mutex mutex)
+    readonly string _folder;
+
+    SingleInstance(string id, Mutex mutex, string folder)
     {
         _mutex = mutex;
+        _folder = folder;
         _wake = new EventWaitHandle(false, EventResetMode.AutoReset, WakeName(id));
+    }
+
+    // How long a newer launch waits for the older copy it asked to close to let go of the data folder.
+    public static readonly TimeSpan TakeoverWait = TimeSpan.FromSeconds(20);
+
+    static bool Take(Mutex mutex, TimeSpan wait)
+    {
+        try { return mutex.WaitOne(wait); }
+        catch (AbandonedMutexException) { return true; }   // the last instance crashed; the lock is ours
     }
 
     static string LockName(string id) => @"Local\" + id + ".lock";
@@ -31,20 +43,28 @@ public sealed class SingleInstance : IDisposable
 
     // Takes the lock, or returns null if another instance holds it (after asking that one to come to the front).
     // "wait" gives a previous instance that is still shutting down (an update restart) time to let go.
-    public static SingleInstance? TryAcquire(string dataFolder, TimeSpan wait)
+    // "replaceRunning" is asked once when another instance holds the lock; when it asks that instance to close (a
+    // newer version has been launched) and returns true, this waits for it to finish instead of waking it.
+    public static SingleInstance? TryAcquire(string dataFolder, TimeSpan wait, Func<bool>? replaceRunning = null)
     {
         var id = IdFor(dataFolder);
         var mutex = new Mutex(false, LockName(id));
-        bool got;
-        try { got = mutex.WaitOne(wait); }
-        catch (AbandonedMutexException) { got = true; }   // the last instance crashed; the lock is ours
+        var got = Take(mutex, wait);
+        if (!got && replaceRunning != null)
+        {
+            bool asked;
+            try { asked = replaceRunning(); } catch (Exception) { asked = false; }
+            if (asked) got = Take(mutex, TakeoverWait);
+        }
         if (!got)
         {
             mutex.Dispose();
             Wake(id);
             return null;
         }
-        return new SingleInstance(id, mutex);
+        var instance = new SingleInstance(id, mutex, dataFolder);
+        InstanceInfo.Write(dataFolder);
+        return instance;
     }
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
@@ -72,6 +92,7 @@ public sealed class SingleInstance : IDisposable
     public void Dispose()
     {
         _stop = true;
+        InstanceInfo.Clear(_folder);
         try { _mutex.ReleaseMutex(); } catch (Exception) { }
         _mutex.Dispose();
         _wake.Dispose();

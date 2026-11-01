@@ -46,6 +46,9 @@ public class AppSettings
     // so a settings file written by an earlier version (which saved Google as the default) does not pin it.
     public bool SearchEngineSetByUser { get; set; }
 
+    // True once the desktop shortcut has been created. After that it is only repaired, so deleting it sticks.
+    public bool DesktopShortcutOffered { get; set; }
+
     // LowMemory, Balanced, Performance, or Custom (uses the three numbers below).
     public string Mode { get; set; } = Balanced;
 

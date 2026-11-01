@@ -40,7 +40,9 @@ public partial class App : Application
 
         // One instance per data folder. After an update the old copy may still be closing, so wait for it.
         var wait = args.Contains(Updater.WaitForPreviousArgument) ? TimeSpan.FromSeconds(20) : TimeSpan.Zero;
-        _instance = SingleInstance.TryAcquire(ProfileStore.Root, wait);
+        // A newer version launched while an older one is open (a fresh download) closes it and takes over.
+        _instance = SingleInstance.TryAcquire(ProfileStore.Root, wait,
+            () => InstanceInfo.CloseOlderCopy(ProfileStore.Root, Updater.CurrentVersion));
         if (_instance == null)
         {
             Shutdown();

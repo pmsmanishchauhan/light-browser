@@ -67,7 +67,18 @@ function Press($dlg, $name) {
     $b = By-Name $dlg $name
     [WinFind2]::Click([IntPtr]$b.Current.NativeWindowHandle)
 }
-function Start-App($exe) { $script:proc = Start-Process $exe -PassThru; Start-Sleep -Seconds 9 }
+# A fresh exe is scanned by antivirus on first start, so wait until the window and its Update button really exist.
+function Start-App($exe) {
+    $script:proc = Start-Process $exe -PassThru
+    $t = Get-Date
+    while (((Get-Date) - $t).TotalSeconds -lt 60) {
+        Start-Sleep -Milliseconds 500
+        $script:proc.Refresh()
+        if ($script:proc.HasExited) { break }
+        if ($script:proc.MainWindowHandle -ne 0 -and (By-Name (Main-Win) 'Update')) { break }
+    }
+    Start-Sleep -Seconds 2
+}
 function Stop-App {
     Get-Process LightBrowser -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$tmp*" } | ForEach-Object { $_.CloseMainWindow() | Out-Null }
     Start-Sleep 4
@@ -111,6 +122,8 @@ try {
     $exe = Join-Path $appDir 'LightBrowser.exe'
     $env:LIGHTBROWSER_HOME = Join-Path $tmp 'home'
     New-Item $env:LIGHTBROWSER_HOME -ItemType Directory | Out-Null
+    # The Update button is in the profile panel, which starts hidden: start with it shown.
+    '{"SidebarCollapsed": false, "SidebarSetByUser": true}' | Set-Content (Join-Path $env:LIGHTBROWSER_HOME 'settings.json')
 
     '1. A download that does not match the published checksum is refused'
     Copy-Item (Join-Path $tmp 'pub1\LightBrowser.exe') $exe
@@ -123,8 +136,12 @@ try {
     $ask = Wait-Dialog 'Update'
     Check 'it asks before installing' ($null -ne $ask -and (Dialog-Text $ask) -like '*v9.9.9*') ("dialog=" + $(if ($ask) { Dialog-Text $ask } else { 'none; button now says: ' + (Update-Text) }))
     if (-not $ask) { throw 'no confirmation dialog' }
+    $askHandle = [IntPtr]$ask.Current.NativeWindowHandle
     Press $ask 'Yes'
-    $warn = Wait-Dialog 'Update'
+    # Wait for the confirmation to disappear, or the next lookup would find it again instead of the warning.
+    $t = Get-Date
+    while (((Get-Date) - $t).TotalSeconds -lt 10 -and [WinFind2]::Find([uint32]$script:proc.Id, 'Update') -eq $askHandle) { Start-Sleep -Milliseconds 200 }
+    $warn = Wait-Dialog 'Update' 30
     Check 'the bad download is refused with a warning' ($null -ne $warn -and (Dialog-Text $warn) -like '*checksum*') (Dialog-Text $warn)
     if ($warn) { Press $warn 'OK' }
     Start-Sleep 1
@@ -155,6 +172,46 @@ try {
     }
     Check 'the previous version was cleaned up' (-not (Test-Path "$exe.old"))
     Stop-App
+
+    '3. Launching a newer exe while an older copy is open closes the old one and takes over'
+    $oldDir = Join-Path $tmp 'oldcopy'; New-Item $oldDir -ItemType Directory | Out-Null
+    $oldExe = Join-Path $oldDir 'LightBrowser.exe'
+    Copy-Item (Join-Path $tmp 'pub1\LightBrowser.exe') $oldExe
+    $desk = Join-Path $tmp 'desktop'; New-Item $desk -ItemType Directory | Out-Null
+    $env:LIGHTBROWSER_DESKTOP_DIR = $desk   # a stand-in desktop, so the real one is untouched
+    Start-App $oldExe
+    $oldProc = $script:proc
+    $lnk = Join-Path $desk 'LightBrowser.lnk'
+    Check 'the first launch put a shortcut on the desktop' (Test-Path $lnk)
+    if (Test-Path $lnk) {
+        $target = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk).TargetPath
+        Check 'the shortcut points at the exe' ($target -eq $oldExe) $target
+    }
+    Check "the older copy ($v1) is open" ((-not $oldProc.HasExited) -and ((Version-Of $oldExe) -eq $v1))
+    $noteFile = Join-Path $env:LIGHTBROWSER_HOME 'instance.txt'
+    Check 'the open copy left a note about itself' ((Test-Path $noteFile) -and ((Get-Content $noteFile -Raw) -like "$($oldProc.Id)|$v1|*")) $(if (Test-Path $noteFile) { Get-Content $noteFile -Raw })
+
+    $newDir = Join-Path $tmp 'newcopy'; New-Item $newDir -ItemType Directory | Out-Null
+    $newExe2 = Join-Path $newDir 'LightBrowser.exe'
+    Copy-Item (Join-Path $tmp 'pub2\LightBrowser.exe') $newExe2
+    $newProc2 = Start-Process $newExe2 -PassThru
+    $t = Get-Date
+    while (((Get-Date) - $t).TotalSeconds -lt 40 -and -not $oldProc.HasExited) { Start-Sleep -Milliseconds 400 }
+    Check 'the older copy closed' $oldProc.HasExited
+    Start-Sleep 8
+    $newProc2.Refresh()
+    Check 'the newer copy is the one now running' ((-not $newProc2.HasExited) -and $newProc2.MainWindowHandle -ne 0)
+    if (-not $newProc2.HasExited) {
+        $script:proc = $newProc2
+        Check 'and it is the newer version' ((Update-Text) -like "v$v2 - check for updates*") (Update-Text)
+    }
+
+    'Launching an OLDER exe while the newer one is open only wakes it (no downgrade)'
+    $oldAgain = Start-Process $oldExe -PassThru
+    Start-Sleep 6
+    Check 'the older launch exited by itself' $oldAgain.HasExited
+    Check 'the newer copy was left running' (-not $newProc2.HasExited)
+    Stop-App
 }
 finally {
     Stop-App
@@ -163,6 +220,6 @@ finally {
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Start-Sleep 2
     Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
-    $env:LIGHTBROWSER_HOME = $null; $env:LIGHTBROWSER_UPDATE_API = $null
+    $env:LIGHTBROWSER_HOME = $null; $env:LIGHTBROWSER_UPDATE_API = $null; $env:LIGHTBROWSER_DESKTOP_DIR = $null
 }
 if ($script:fail -eq 0) { 'ALL UPDATE CHECKS PASSED' } else { "$($script:fail) UPDATE CHECK(S) FAILED"; exit 1 }
