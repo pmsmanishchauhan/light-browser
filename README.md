@@ -43,6 +43,8 @@ Three buttons at the bottom of the sidebar switch how much memory the browser ma
 | Balanced (default) | 5 | 10 min | trimmed |
 | Fast | 15 | 60 min | not trimmed |
 
+Low RAM is a strict cap: opening a third tab unloads the oldest hidden one straight away (the tab you are looking at, a loading tab and one playing audio are never unloaded, so the counter can briefly read 3/2 while a page loads). Low RAM also starts the engine without GPU acceleration, which takes effect the next time the app starts. On the first run, a PC with 4 GB of RAM or less starts in Low RAM automatically.
+
 Your choice is remembered. Advanced: set `"Mode": "Custom"` in `settings.json` to use your own `MaxLoadedTabs`, `IdleMinutes` and `GraceSeconds`. `BrowserArguments` passes extra Chromium switches to the engine; in a test with six real sites, `--disable-gpu` cut total memory by about 25-30% (roughly 300 MB to 225 MB) at the cost of a little more CPU (about 1% to 3% of a core when idle), so it can suit a weak PC. It is off by default.
 
 ## History, passwords and names

@@ -19,10 +19,14 @@ public class AppSettings
 
     static readonly Dictionary<string, ModeLimits> Presets = new()
     {
-        [LowMemory] = new(2, 3, 60, true),
+        [LowMemory] = new(2, 3, 0, true),   // no grace: the cap is strict, a third tab unloads the oldest at once
         [Balanced] = new(5, 10, 120, true),
         [Performance] = new(15, 60, 120, false),
     };
+
+    // PCs with this much RAM or less start in Low RAM mode on the first run. Tests replace the lookup.
+    public const long WeakMachineBytes = 4L * 1024 * 1024 * 1024 + 512L * 1024 * 1024;
+    public static Func<long> InstalledMemoryBytes { get; set; } = () => GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
 
     // True when the profile panel on the left is hidden to give the page more room (Ctrl+B).
     public bool SidebarCollapsed { get; set; }
@@ -60,7 +64,11 @@ public class AppSettings
                     (settings.MaxLoadedTabs, settings.IdleMinutes, settings.GraceSeconds) != (5, 10, 120))
                     settings.Mode = Custom;
             }
-            else settings.Save();   // write the defaults once so the file is there to edit
+            else
+            {
+                if (InstalledMemoryBytes() <= WeakMachineBytes) settings.Mode = LowMemory;
+                settings.Save();   // write the defaults once so the file is there to edit
+            }
         }
         catch (Exception)
         {

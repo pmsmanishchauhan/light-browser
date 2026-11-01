@@ -11,15 +11,40 @@ public class SettingsTests : DataFolderTest
     [Fact]
     public void First_run_defaults_to_Balanced_and_writes_the_file()
     {
-        var s = AppSettings.Load();
+        var before = AppSettings.InstalledMemoryBytes;
+        AppSettings.InstalledMemoryBytes = () => 16L * 1024 * 1024 * 1024;
+        try
+        {
+            var s = AppSettings.Load();
 
-        Assert.Equal(AppSettings.Balanced, s.Mode);
-        Assert.Equal(new AppSettings.ModeLimits(5, 10, 120, true), s.Limits);
-        Assert.True(File.Exists(SettingsFile));
+            Assert.Equal(AppSettings.Balanced, s.Mode);
+            Assert.Equal(new AppSettings.ModeLimits(5, 10, 120, true), s.Limits);
+            Assert.True(File.Exists(SettingsFile));
+        }
+        finally { AppSettings.InstalledMemoryBytes = before; }
+    }
+
+    [Fact]
+    public void First_run_on_a_weak_machine_starts_in_Low_RAM()
+    {
+        var before = AppSettings.InstalledMemoryBytes;
+        AppSettings.InstalledMemoryBytes = () => 4L * 1024 * 1024 * 1024;
+        try { Assert.Equal(AppSettings.LowMemory, AppSettings.Load().Mode); }
+        finally { AppSettings.InstalledMemoryBytes = before; }
+    }
+
+    [Fact]
+    public void An_existing_choice_is_not_overridden_on_a_weak_machine()
+    {
+        File.WriteAllText(SettingsFile, "{ \"Mode\": \"Performance\" }");
+        var before = AppSettings.InstalledMemoryBytes;
+        AppSettings.InstalledMemoryBytes = () => 2L * 1024 * 1024 * 1024;
+        try { Assert.Equal(AppSettings.Performance, AppSettings.Load().Mode); }
+        finally { AppSettings.InstalledMemoryBytes = before; }
     }
 
     [Theory]
-    [InlineData(AppSettings.LowMemory, 2, 3, 60, true)]
+    [InlineData(AppSettings.LowMemory, 2, 3, 0, true)]
     [InlineData(AppSettings.Balanced, 5, 10, 120, true)]
     [InlineData(AppSettings.Performance, 15, 60, 120, false)]
     public void Each_mode_has_its_own_limits(string mode, int max, int idle, int grace, bool trimHidden)
