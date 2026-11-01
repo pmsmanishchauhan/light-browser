@@ -42,11 +42,63 @@ public class SearchTests : DataFolderTest
         Assert.Equal(url, SearchEngines.ToUrl(typed, "duckduckgo"));
 
     [Fact]
-    public void An_unknown_or_missing_engine_falls_back_to_the_default()
+    public void An_unknown_or_missing_engine_falls_back_to_the_default_which_is_DuckDuckGo()
     {
-        Assert.Equal("https://www.google.com/search?q=x", SearchEngines.ToUrl("x", "nonsense"));
-        Assert.Equal("https://www.google.com/search?q=x", SearchEngines.ToUrl("x", null));
-        Assert.Equal("Google", SearchEngines.Get("nonsense").Name);
+        Assert.Equal("https://duckduckgo.com/?q=x", SearchEngines.ToUrl("x", "nonsense"));
+        Assert.Equal("https://duckduckgo.com/?q=x", SearchEngines.ToUrl("x", null));
+        Assert.Equal("DuckDuckGo", SearchEngines.Get("nonsense").Name);
+        Assert.Equal("duckduckgo", SearchEngines.DefaultId);
+    }
+
+    [Theory]
+    [InlineData("brave", "duckduckgo", "brave")]       // the profile's own choice wins
+    [InlineData("", "bing", "bing")]                   // empty means the app default
+    [InlineData(null, "bing", "bing")]
+    [InlineData("nonsense", "bing", "bing")]           // an unknown saved id is ignored
+    [InlineData("", "nonsense", "duckduckgo")]         // and so is an unknown app default
+    public void A_profile_can_have_its_own_engine_otherwise_the_app_default_applies(string? profile, string app, string expected) =>
+        Assert.Equal(expected, SearchEngines.Effective(profile, app));
+
+    [Fact]
+    public void Each_profile_searches_with_its_own_engine()
+    {
+        var a = new Profile { SearchEngine = "brave" };
+        var b = new Profile();
+
+        Assert.Equal("https://search.brave.com/search?q=hotel", SearchEngines.ToUrl("hotel", SearchEngines.Effective(a.SearchEngine, "duckduckgo")));
+        Assert.Equal("https://duckduckgo.com/?q=hotel", SearchEngines.ToUrl("hotel", SearchEngines.Effective(b.SearchEngine, "duckduckgo")));
+    }
+
+    [Fact]
+    public void A_profiles_engine_is_saved_loaded_and_copied_but_an_old_file_has_none()
+    {
+        var store = new ProfileStore();
+        store.Profiles.Add(new Profile { Name = "A", SearchEngine = "brave" });
+        store.Save();
+        Assert.Equal("brave", ProfileStore.Load().Profiles.Single().SearchEngine);
+        Assert.Equal("brave", store.Profiles.Single().Duplicate().SearchEngine);
+
+        System.IO.File.WriteAllText(ProfileStore.FilePath, "[{\"Id\":\"abc\",\"Name\":\"Old\"}]");
+        Assert.Equal("", ProfileStore.Load().Profiles.Single().SearchEngine);
+    }
+
+    [Fact]
+    public void An_older_settings_file_that_saved_Google_as_the_default_moves_to_the_new_default()
+    {
+        System.IO.File.WriteAllText(System.IO.Path.Combine(Dir, "settings.json"), "{ \"SearchEngine\": \"google\" }");
+
+        Assert.Equal("duckduckgo", AppSettings.Load().SearchEngine);
+    }
+
+    [Fact]
+    public void A_choice_made_in_the_app_is_kept_including_Google()
+    {
+        var s = AppSettings.Load();
+        s.SearchEngine = "google";
+        s.SearchEngineSetByUser = true;
+        s.Save();
+
+        Assert.Equal("google", AppSettings.Load().SearchEngine);
     }
 
     [Fact]
@@ -74,12 +126,13 @@ public class SearchTests : DataFolderTest
     public void The_chosen_engine_is_remembered_and_a_bad_saved_value_is_replaced()
     {
         var s = AppSettings.Load();
-        Assert.Equal("google", s.SearchEngine);
+        Assert.Equal("duckduckgo", s.SearchEngine);
         s.SearchEngine = "brave";
+        s.SearchEngineSetByUser = true;
         s.Save();
         Assert.Equal("brave", AppSettings.Load().SearchEngine);
 
-        System.IO.File.WriteAllText(System.IO.Path.Combine(Dir, "settings.json"), "{ \"SearchEngine\": \"nope\" }");
-        Assert.Equal("google", AppSettings.Load().SearchEngine);
+        System.IO.File.WriteAllText(System.IO.Path.Combine(Dir, "settings.json"), "{ \"SearchEngine\": \"nope\", \"SearchEngineSetByUser\": true }");
+        Assert.Equal("duckduckgo", AppSettings.Load().SearchEngine);
     }
 }

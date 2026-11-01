@@ -37,10 +37,11 @@ public class ProfileDialog : Window
     readonly List<string> _existingNames;
     readonly Func<string, IReadOnlyList<string>>? _groupSites;
     int _selected;
+    string _engineId = "";
 
     public ProfileDialog(Profile? existing = null, IReadOnlyList<string>? suggestions = null,
                          Func<string, IReadOnlyList<string>>? groupSites = null,
-                         IEnumerable<string>? existingNames = null)
+                         IEnumerable<string>? existingNames = null, string? appEngineId = null)
     {
         _groupSites = groupSites;
         _existingNames = (existingNames ?? new List<string>()).ToList();
@@ -102,6 +103,31 @@ public class ProfileDialog : Window
         }
         Select(existing == null ? 0 : Math.Max(0, Array.FindIndex(Colors, c => c.Hex == existing.Color)));
 
+        // Search engine for this profile: one of the engines, or the app default.
+        _engineId = SearchEngines.IsKnown(existing?.SearchEngine) ? existing!.SearchEngine : "";
+        var engineOptions = new List<(string Id, string Label)> { ("", $"App default ({SearchEngines.Get(appEngineId).Name})") };
+        engineOptions.AddRange(SearchEngines.All.Select(e => (e.Id, e.Name)));
+        var engineButtons = new List<(string Id, Button Button)>();
+        var engineRow = new WrapPanel { Margin = new Thickness(0, 4, 0, 0) };
+        void RefreshEngines()
+        {
+            foreach (var (id, button) in engineButtons)
+                button.Background = new SolidColorBrush(id == _engineId ? Color.FromRgb(0x4F, 0x8E, 0xF7) : Color.FromRgb(0x3A, 0x3B, 0x42));
+        }
+        foreach (var (id, label) in engineOptions)
+        {
+            var chip = new Button
+            {
+                Content = label, Foreground = Fg, Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(0, 0, 6, 6), FontSize = 12,
+                Style = (Style)Application.Current.FindResource("Flat"),
+            };
+            var chosen = id;
+            chip.Click += (_, _) => { _engineId = chosen; RefreshEngines(); };
+            engineButtons.Add((id, chip));
+            engineRow.Children.Add(chip);
+        }
+        RefreshEngines();
+
         var ok = NewButton("Save");
         ok.Background = new SolidColorBrush(Color.FromRgb(0x4F, 0x8E, 0xF7));
         ok.FontWeight = FontWeights.SemiBold;
@@ -137,6 +163,8 @@ public class ProfileDialog : Window
         panel.Children.Add(_group);
         panel.Children.Add(Label("Colour", 12));
         panel.Children.Add(swatchRow);
+        panel.Children.Add(Label("Search engine (for text typed in the address bar)", 12));
+        panel.Children.Add(engineRow);
         panel.Children.Add(Label("Home pages (one URL per line)", 12));
         panel.Children.Add(_urls);
         var otaBtn = NewButton("OTA portals...");
@@ -293,6 +321,9 @@ public class ProfileDialog : Window
     public string Notes => _notes.Text.Trim();
 
     public string ColorHex => Colors[_selected].Hex;
+
+    // Id of this profile's own search engine, or empty for the app default.
+    public string SearchEngineId => _engineId;
 
     // The normalised proxy address, or empty for a direct connection. The login is only kept with a proxy.
     public string Proxy => ProxySpec.Parse(_proxy.Text)?.Server ?? "";

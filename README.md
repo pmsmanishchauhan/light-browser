@@ -21,7 +21,7 @@ It is a thin shell (a few MB) around the Microsoft Edge WebView2 engine that shi
 - Popups (OAuth, login windows) open as tabs in the same profile and keep `window.opener`.
 - Shortcuts: Ctrl+T new tab, Ctrl+W close tab, Ctrl+L address bar, Ctrl+K profile search, middle-click closes a tab.
 - OTA portals: a built-in list of extranet and channel-manager sign-in pages, one click to add as home pages (see below).
-- Search engines: Google, DuckDuckGo, Bing, Brave Search, Yahoo, Ecosia, Startpage and Qwant. Pick the default with the magnifier button next to the address bar, or start a search with a keyword to use another once (`ddg hotel rates`, `b ...`, `br ...`, `g ...`, `y ...`, `e ...`, `sp ...`, `q ...`).
+- Search engines: DuckDuckGo (the default), Google, Bing, Brave Search, Yahoo, Ecosia, Startpage and Qwant. Each profile can have its own engine, chosen in the profile dialog or with the magnifier button next to the address bar (which also sets the app-wide default); a profile without one uses the app default. Start a search with a keyword to use another engine once (`ddg hotel rates`, `b ...`, `br ...`, `g ...`, `y ...`, `e ...`, `sp ...`, `q ...`).
 - Ad and tracker blocking, per-profile proxy: see the sections below.
 - Update button (bottom of the profile panel): checks GitHub only when you click it. See "Updates".
 - App icon: drawn by `tools\make-icon.ps1`, which writes `assets\icon.ico` and `assets\logo.png`.

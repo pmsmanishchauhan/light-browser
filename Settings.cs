@@ -34,8 +34,12 @@ public class AppSettings
     // Blocks requests to known ad and tracker domains (see RequestBlocker). Toggled from the toolbar.
     public bool BlockTrackers { get; set; } = true;
 
-    // Id of the engine used for address-bar searches (see SearchEngines.All).
+    // Id of the app-wide engine for address-bar searches (see SearchEngines.All). A profile can choose its own.
     public string SearchEngine { get; set; } = SearchEngines.DefaultId;
+
+    // True once someone picked the app default themselves. Until then the app default is always the built-in one,
+    // so a settings file written by an earlier version (which saved Google as the default) does not pin it.
+    public bool SearchEngineSetByUser { get; set; }
 
     // LowMemory, Balanced, Performance, or Custom (uses the three numbers below).
     public string Mode { get; set; } = Balanced;
@@ -81,7 +85,7 @@ public class AppSettings
             settings = new AppSettings();   // unreadable settings: use the defaults
         }
         settings.BrowserArguments ??= "";
-        if (!SearchEngines.IsKnown(settings.SearchEngine)) settings.SearchEngine = SearchEngines.DefaultId;
+        if (!settings.SearchEngineSetByUser || !SearchEngines.IsKnown(settings.SearchEngine)) settings.SearchEngine = SearchEngines.DefaultId;
         if (settings.Mode != Custom && !Presets.ContainsKey(settings.Mode)) settings.Mode = Balanced;
         settings.MaxLoadedTabs = Math.Clamp(settings.MaxLoadedTabs, 1, 500);
         settings.IdleMinutes = Math.Clamp(settings.IdleMinutes, 1, 1440);

@@ -64,6 +64,9 @@ public class Profile : INotifyPropertyChanged
     // In Trash: hidden from the profile list, logins kept until "Delete forever".
     public bool IsDeleted { get; set; }
 
+    // This profile's own search engine (an id from SearchEngines.All), or empty to use the app default.
+    public string SearchEngine { get; set; } = "";
+
     // Optional proxy this profile's traffic goes through (see ProxySpec), with its sign-in details.
     // The password is stored encrypted; ProxyPassword reads and writes it as plain text in memory only.
     public string Proxy
@@ -134,7 +137,7 @@ public class Profile : INotifyPropertyChanged
         for (var n = 2; taken.Contains(name); n++) name = $"{baseName} (copy {n})";
         return new Profile
         {
-            Name = name, Color = Color, Group = Group, Notes = Notes, HomeUrls = new List<string>(HomeUrls),
+            Name = name, Color = Color, Group = Group, Notes = Notes, HomeUrls = new List<string>(HomeUrls), SearchEngine = SearchEngine,
         };
     }
 

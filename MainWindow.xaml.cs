@@ -114,6 +114,7 @@ RefreshView();
         ChipName.Text = _current?.Name ?? "Choose profile";
         ChipInitial.Text = _current?.Initial ?? "+";
         ChipDot.Fill = _current?.Brush ?? new SolidColorBrush(Color.FromRgb(0x6B, 0x6E, 0x78));
+        UpdateSearchButton();   // the profile may use its own search engine
     }
 
     // ---- updates --------------------------------------------------------------------------
@@ -456,13 +457,13 @@ RefreshView();
 
     void AddProfile_Click(object sender, RoutedEventArgs e)
     {
-        var dlg = new ProfileDialog(null, _suggestions.Sites, GroupSitesFor(null), ExistingNames(null)) { Owner = this };
+        var dlg = new ProfileDialog(null, _suggestions.Sites, GroupSitesFor(null), ExistingNames(null), _settings.SearchEngine) { Owner = this };
         if (dlg.ShowDialog() != true) return;
         var p = new Profile
         {
             Name = dlg.ProfileName, Color = dlg.ColorHex, HomeUrls = dlg.HomeUrls,
             Group = CanonicalGroup(dlg.GroupName), Notes = dlg.Notes,
-            Proxy = dlg.Proxy, ProxyUser = dlg.ProxyUser,
+            Proxy = dlg.Proxy, ProxyUser = dlg.ProxyUser, SearchEngine = dlg.SearchEngineId,
         };
         p.ProxyPassword = dlg.ProxyPassword;
         _store.Profiles.Add(p);
@@ -477,7 +478,7 @@ RefreshView();
     async void EditProfile_Click(object sender, RoutedEventArgs e)
     {
         if (ProfileOf(sender) is not { } p) return;
-        var dlg = new ProfileDialog(p, _suggestions.Sites, GroupSitesFor(p), ExistingNames(p)) { Owner = this };
+        var dlg = new ProfileDialog(p, _suggestions.Sites, GroupSitesFor(p), ExistingNames(p), _settings.SearchEngine) { Owner = this };
         if (dlg.ShowDialog() != true) return;
 
         // A profile's logins live in the engine of its proxy, so a different proxy means a clean store.
@@ -503,6 +504,7 @@ RefreshView();
         }
         p.ProxyUser = dlg.ProxyUser;
         p.ProxyPassword = dlg.ProxyPassword;
+        p.SearchEngine = dlg.SearchEngineId;
         p.Name = dlg.ProfileName;
         p.Color = dlg.ColorHex;
         p.HomeUrls = dlg.HomeUrls;
@@ -1375,30 +1377,65 @@ RefreshView();
         ActiveWeb?.Navigate(url);
     }
 
-    string Normalize(string text) => SearchEngines.ToUrl(text, _settings.SearchEngine);
+    string Normalize(string text) => SearchEngines.ToUrl(text, EffectiveEngineId);
 
     // The search button next to the address bar: pick the engine used for text that is not an address.
+    // The engine for text typed in the address bar: the open profile's own choice, else the app default.
+    string EffectiveEngineId => SearchEngines.Effective(_current?.SearchEngine, _settings.SearchEngine);
+
+    // The magnifier button: choose the engine for this profile, or the app-wide default.
     void SearchEngine_Click(object sender, RoutedEventArgs e)
     {
         var menu = new ContextMenu { PlacementTarget = SearchBtn, Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom };
+        static MenuItem Choice(string header, bool selected, Action pick)
+        {
+            var item = new MenuItem { Header = header, IsCheckable = true, IsChecked = selected };
+            item.Click += (_, _) => pick();
+            return item;
+        }
+
+        if (_current is { } profile)
+        {
+            menu.Items.Add(new MenuItem { Header = $"For \"{profile.Name}\"", IsEnabled = false, FontWeight = FontWeights.SemiBold });
+            menu.Items.Add(Choice($"App default ({SearchEngines.Get(_settings.SearchEngine).Name})", !SearchEngines.IsKnown(profile.SearchEngine),
+                () => SetProfileEngine(profile, "")));
+            foreach (var engine in SearchEngines.All)
+            {
+                var chosen = engine;
+                menu.Items.Add(Choice($"{engine.Name}    ({engine.Keywords[0]} ...)", profile.SearchEngine == engine.Id,
+                    () => SetProfileEngine(profile, chosen.Id)));
+            }
+            menu.Items.Add(new Separator());
+        }
+        var appDefault = new MenuItem { Header = "App default for all profiles" };
         foreach (var engine in SearchEngines.All)
         {
-            var item = new MenuItem
-            {
-                Header = $"{engine.Name}    ({engine.Keywords[0]} ...)", IsCheckable = true,
-                IsChecked = engine.Id == _settings.SearchEngine,
-            };
             var chosen = engine;
-            item.Click += (_, _) => { _settings.SearchEngine = chosen.Id; _settings.Save(); UpdateSearchButton(); };
-            menu.Items.Add(item);
+            appDefault.Items.Add(Choice(engine.Name, engine.Id == _settings.SearchEngine, () =>
+            {
+                _settings.SearchEngine = chosen.Id;
+                _settings.SearchEngineSetByUser = true;
+                _settings.Save();
+                UpdateSearchButton();
+            }));
         }
+        menu.Items.Add(appDefault);
         menu.IsOpen = true;
+    }
+
+    void SetProfileEngine(Profile profile, string engineId)
+    {
+        profile.SearchEngine = engineId;
+        _store.Save();
+        UpdateSearchButton();
     }
 
     void UpdateSearchButton()
     {
-        var engine = SearchEngines.Get(_settings.SearchEngine);
-        SearchBtn.ToolTip = $"Search engine: {engine.Name}. Type a keyword first to use another once, e.g. \"ddg hotel rates\".";
+        var engine = SearchEngines.Get(EffectiveEngineId);
+        var own = _current != null && SearchEngines.IsKnown(_current.SearchEngine);
+        SearchBtn.ToolTip = $"Search engine: {engine.Name}{(own ? " (set for this profile)" : " (app default)")}. " +
+                            "Click to change it. Type a keyword first to use another once, e.g. \"ddg hotel rates\".";
         Address.ToolTip = $"Type an address, or search with {engine.Name}";
     }
 

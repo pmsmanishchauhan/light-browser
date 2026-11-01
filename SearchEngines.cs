@@ -9,7 +9,8 @@ public sealed record SearchEngine(string Id, string Name, string Template, strin
 
 public static class SearchEngines
 {
-    public const string DefaultId = "google";
+    // Private by default. Anyone who picked an engine themselves keeps it (see AppSettings.SearchEngineSetByUser).
+    public const string DefaultId = "duckduckgo";
 
     public static readonly SearchEngine[] All =
     {
@@ -27,6 +28,10 @@ public static class SearchEngines
         All.FirstOrDefault(e => e.Id == id) ?? All.First(e => e.Id == DefaultId);
 
     public static bool IsKnown(string? id) => All.Any(e => e.Id == id);
+
+    // A profile's own engine wins; an empty or unknown one means "use the app default".
+    public static string Effective(string? profileEngineId, string? appEngineId) =>
+        IsKnown(profileEngineId) ? profileEngineId! : Get(appEngineId).Id;
 
     // What the address bar does with typed text: addresses are opened (https:// added when missing),
     // anything else is searched. Returns the URL to open.
