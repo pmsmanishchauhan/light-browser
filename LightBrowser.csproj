@@ -8,7 +8,14 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>LightBrowser</RootNamespace>
     <AssemblyName>LightBrowser</AssemblyName>
+    <!-- The version the Update button compares with the latest GitHub release. -->
+    <Version>0.4.0</Version>
+    <ApplicationIcon>assets\icon.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="assets\icon.ico" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2739.15" />

@@ -14,6 +14,7 @@ public class Profile : INotifyPropertyChanged
     string _color = "#4F8EF7";
     string _group = "";
     string _notes = "";
+    string _proxy = "";
     DateTime? _lastUsed;
 
     public Profile() => Tabs.CollectionChanged += (_, _) => Changed(nameof(IsOpen));
@@ -63,6 +64,29 @@ public class Profile : INotifyPropertyChanged
     // In Trash: hidden from the profile list, logins kept until "Delete forever".
     public bool IsDeleted { get; set; }
 
+    // Optional proxy this profile's traffic goes through (see ProxySpec), with its sign-in details.
+    // The password is stored encrypted; ProxyPassword reads and writes it as plain text in memory only.
+    public string Proxy
+    {
+        get => _proxy;
+        set { _proxy = value ?? ""; Changed(nameof(Proxy)); Changed(nameof(Tip)); }
+    }
+
+    public string ProxyUser { get; set; } = "";
+
+    public string ProxyPasswordProtected { get; set; } = "";
+
+    [JsonIgnore]
+    public string ProxyPassword
+    {
+        get => ProxySecret.Unprotect(Id, ProxyPasswordProtected);
+        set => ProxyPasswordProtected = ProxySecret.Protect(Id, value);
+    }
+
+    // The parsed proxy, or null when the profile connects directly (or the saved text is unusable).
+    [JsonIgnore]
+    public ProxySpec? ProxySpec => ProxySpec.Parse(Proxy);
+
     [JsonIgnore]
     public string GroupName => string.IsNullOrWhiteSpace(Group) ? "Ungrouped" : Group;
 
@@ -74,6 +98,7 @@ public class Profile : INotifyPropertyChanged
         {
             var lines = new List<string>();
             if (!string.IsNullOrWhiteSpace(Notes)) lines.Add(Notes.Trim());
+            if (ProxySpec is { } px) lines.Add($"Proxy: {px.Host}:{px.Port}");
             if (LastUsed is { } t) lines.Add($"Last used {t.ToLocalTime():d MMM yyyy, HH:mm}");
             return lines.Count == 0 ? null : string.Join("\n", lines);
         }
@@ -164,6 +189,9 @@ public class ProfileStore
 
     // One shared WebView2 environment: all profiles live under it and share browser processes.
     public static string DataDir => Path.Combine(Root, "WebView2Data");
+
+    // Profiles that use a proxy run in their own engine and data folder (see ProxySpec.FolderName).
+    public static string DataDirFor(ProxySpec? proxy) => proxy == null ? DataDir : Path.Combine(Root, proxy.FolderName);
 
     public static string FilePath => Path.Combine(Root, "profiles.json");
 

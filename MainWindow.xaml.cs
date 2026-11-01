@@ -20,6 +20,8 @@ public partial class MainWindow : Window
     readonly HistoryStore _history = new();
     readonly ICollectionView _view;
     CoreWebView2Environment? _env;
+    readonly Dictionary<string, CoreWebView2Environment> _proxyEnvs = new();   // one engine per proxy in use
+    readonly RequestBlocker _blocker = RequestBlocker.Load();
     Profile? _current;
     bool _suppressSelection;   // set while code (not the user) changes the selected profile
     bool _showTrash;           // sidebar is listing Trash instead of profiles
@@ -41,7 +43,11 @@ public partial class MainWindow : Window
         ProfileList.ItemsSource = _view;
         ApplySidebar();
         HighlightMode();
-        RefreshView();
+        UpdateBlockButton();
+        UpdateSearchButton();
+        Updater.CleanupOld(Environment.ProcessPath);   // the version this one replaced
+        ShowUpdateIdle();
+RefreshView();
 
         Closing += (_, _) =>
         {
@@ -104,6 +110,110 @@ public partial class MainWindow : Window
         ChipName.Text = _current?.Name ?? "Choose profile";
         ChipInitial.Text = _current?.Initial ?? "+";
         ChipDot.Fill = _current?.Brush ?? new SolidColorBrush(Color.FromRgb(0x6B, 0x6E, 0x78));
+    }
+
+    // ---- updates --------------------------------------------------------------------------
+
+    ReleaseInfo? _update;
+    bool _updating;
+
+    void ShowUpdateIdle(string? note = null)
+    {
+        var current = $"v{Updater.CurrentVersion}";
+        UpdateBtn.Content = _update != null ? $"Update to {_update.Tag}" : $"{current} - check for updates";
+        UpdateBtn.Foreground = (Brush)FindResource(_update != null ? "AccentBrush" : "FaintBrush");
+        UpdateBtn.FontWeight = _update != null ? FontWeights.SemiBold : FontWeights.Normal;
+        UpdateBtn.ToolTip = note ?? (_update != null
+            ? $"{_update.Tag} is available. Click to download and install it. Your profiles and logins are kept."
+            : "Click to look for a newer version on GitHub. Nothing is contacted until you click.");
+    }
+
+    async void Update_Click(object sender, RoutedEventArgs e)
+    {
+        if (_updating) return;
+        _updating = true;
+        try
+        {
+            if (_update == null) await CheckForUpdateAsync();
+            else await InstallUpdateAsync(_update);
+        }
+        finally { _updating = false; }
+    }
+
+    async Task CheckForUpdateAsync()
+    {
+        UpdateBtn.Content = "Checking...";
+        try
+        {
+            var exe = Environment.ProcessPath;
+            var latest = await Updater.CheckAsync(exe != null && Updater.IsStandalone(exe));
+            if (latest != null && latest.Version > Updater.CurrentVersion) { _update = latest; ShowUpdateIdle(); }
+            else
+            {
+                ShowUpdateIdle(latest == null ? "No release found. Click to check again." : "You have the latest version. Click to check again.");
+                UpdateBtn.Content = $"v{Updater.CurrentVersion} - up to date";
+            }
+        }
+        catch (Exception ex)
+        {
+            ShowUpdateIdle("Could not reach GitHub: " + ex.Message + "\nClick to try again.");
+            UpdateBtn.Content = "Could not check - try again";
+        }
+    }
+
+    async Task InstallUpdateAsync(ReleaseInfo release)
+    {
+        var exe = Environment.ProcessPath;
+        // A development build, a read-only folder, or a release without a published checksum is updated by hand.
+        if (!Updater.CanSelfUpdate(exe) || release.Sha256 == null)
+        {
+            if (release.PageUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                Process.Start(new ProcessStartInfo(release.PageUrl) { UseShellExecute = true });
+            return;
+        }
+        var mb = release.Size > 0 ? $" ({release.Size / (1024 * 1024)} MB)" : "";
+        if (MessageBox.Show(this,
+                $"Update LightBrowser from v{Updater.CurrentVersion} to {release.Tag}?\n\nIt downloads {release.AssetName}{mb} from GitHub, checks it, and restarts the app. Your profiles, logins and settings are kept.",
+                "Update", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+
+        var download = exe + ".new";
+        try
+        {
+            var progress = new Progress<double>(p => UpdateBtn.Content = $"Downloading {p:P0}");
+            UpdateBtn.Content = "Downloading 0%";
+            await Updater.DownloadAsync(release, download, progress);
+            UpdateBtn.Content = "Installing...";
+            Updater.Swap(exe!, download);
+        }
+        catch (Exception ex)
+        {
+            try { System.IO.File.Delete(download); } catch (Exception) { }
+            ShowUpdateIdle();
+            MessageBox.Show(this, "The update was not installed, and the current version is unchanged.\n\n" + ex.Message,
+                "Update", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        UpdateBtn.Content = "Restarting...";
+        Updater.RestartAfterExit(exe!);
+        Application.Current.Shutdown();   // saves open tabs on the way out
+    }
+
+    void BlockToggle_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.BlockTrackers = !_settings.BlockTrackers;
+        _settings.Save();
+        UpdateBlockButton();
+    }
+
+    // "Blocking 12" while on (the number is requests blocked since the app started), dim "Blocking off" otherwise.
+    void UpdateBlockButton()
+    {
+        var on = _settings.BlockTrackers;
+        BlockBtn.Content = on ? (_blocker.Blocked > 0 ? $"Blocking {_blocker.Blocked}" : "Blocking") : "Blocking off";
+        BlockBtn.Foreground = (Brush)FindResource(on ? "TextBrush" : "FaintBrush");
+        BlockBtn.ToolTip = on
+            ? $"Ad and tracker blocking is on ({_blocker.Count} domains, {_blocker.Blocked} requests blocked). Click to turn off. Add your own domains in {RequestBlocker.FilePath}"
+            : "Ad and tracker blocking is off. Click to turn on.";
     }
 
     // Back/forward enabled state and the loading bar follow the active tab.
@@ -341,7 +451,9 @@ public partial class MainWindow : Window
         {
             Name = dlg.ProfileName, Color = dlg.ColorHex, HomeUrls = dlg.HomeUrls,
             Group = CanonicalGroup(dlg.GroupName), Notes = dlg.Notes,
+            Proxy = dlg.Proxy, ProxyUser = dlg.ProxyUser,
         };
+        p.ProxyPassword = dlg.ProxyPassword;
         _store.Profiles.Add(p);
         _store.Save();
 
@@ -351,11 +463,35 @@ public partial class MainWindow : Window
         ProfileList.SelectedItem = p;
     }
 
-    void EditProfile_Click(object sender, RoutedEventArgs e)
+    async void EditProfile_Click(object sender, RoutedEventArgs e)
     {
         if (ProfileOf(sender) is not { } p) return;
         var dlg = new ProfileDialog(p, _suggestions.Sites, GroupSitesFor(p), ExistingNames(p)) { Owner = this };
         if (dlg.ShowDialog() != true) return;
+
+        // A profile's logins live in the engine of its proxy, so a different proxy means a clean store.
+        // The old store is wiped first so no sign-ins are left behind, and the tabs reopen through the new proxy.
+        var reopen = false;
+        if (dlg.Proxy != p.Proxy && _env != null)
+        {
+            var ok = MessageBox.Show(this,
+                $"Changing the proxy of \"{p.Name}\" signs it out of every website, because its cookies stay with the proxy they were made through.\n\n" +
+                "Saved passwords in the password list are kept. Continue?",
+                "Change proxy", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (ok != MessageBoxResult.Yes) return;
+            reopen = p == _current;
+            try { await WipeProfileDataAsync(p); }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "Could not clear the profile's old sign-ins, so the proxy was not changed.\n\n" + ex.Message,
+                    "Change proxy", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            CloseProfile(p);
+            p.Proxy = dlg.Proxy;
+        }
+        p.ProxyUser = dlg.ProxyUser;
+        p.ProxyPassword = dlg.ProxyPassword;
         p.Name = dlg.ProfileName;
         p.Color = dlg.ColorHex;
         p.HomeUrls = dlg.HomeUrls;
@@ -364,6 +500,7 @@ public partial class MainWindow : Window
         _store.Save();
         if (p == _current) ApplyProfileChrome();
         RefreshView();
+        if (reopen) ProfileList.SelectedItem = p;   // reopens its tabs through the new proxy
     }
 
     Func<string, IReadOnlyList<string>> GroupSitesFor(Profile? except) =>
@@ -609,17 +746,46 @@ public partial class MainWindow : Window
     // Creates the WebView2 for a tab (new, or a restored one being opened for the first time).
     async Task LoadTabAsync(Profile p, BrowserTab tab, string? url)
     {
+        CoreWebView2Environment env;
+        try { env = await EnvForAsync(p); }
+        catch (Exception ex)
+        {
+            tab.PendingUrl = url;   // stays an unloaded tab; nothing is sent
+            MessageBox.Show(this, $"The proxy engine for \"{p.Name}\" could not start, so the page was not opened.\n\n{ex.Message}",
+                "Proxy", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         var view = new WebView2();
         tab.View = view;
         tab.PendingUrl = null;
         WebHost.Children.Add(view);
         if (_current == p) SelectTab(tab);   // must be visible before WebView2 can create its window
 
-        var options = _env!.CreateCoreWebView2ControllerOptions();
+        var options = env.CreateCoreWebView2ControllerOptions();
         options.ProfileName = p.WebViewProfileName;
         options.IsInPrivateModeEnabled = false;
-        await view.EnsureCoreWebView2Async(_env, options);
+        await view.EnsureCoreWebView2Async(env, options);
         var web = view.CoreWebView2;
+
+        // Answer the proxy's own sign-in request (never a website's) with this profile's proxy login.
+        if (p.ProxySpec is { } proxySpec && p.ProxyUser != "")
+            web.BasicAuthenticationRequested += (_, args) =>
+            {
+                if (!proxySpec.IsChallengeFrom(args.Uri)) return;
+                args.Response.UserName = p.ProxyUser;
+                args.Response.Password = p.ProxyPassword;
+            };
+        // Ad and tracker requests get an empty 403 before they leave the browser (no-op while blocking is off).
+        web.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
+        web.WebResourceRequested += (_, args) =>
+        {
+            if (!_settings.BlockTrackers || !_blocker.IsBlocked(args.Request.Uri)) return;
+            _blocker.Blocked++;
+            UpdateBlockButton();
+            args.Response = env.CreateWebResourceResponse(
+                new System.IO.MemoryStream(System.Text.Encoding.UTF8.GetBytes("Blocked by LightBrowser")), 403, "Blocked", "Content-Type: text/plain");
+        };
         web.Settings.IsPasswordAutosaveEnabled = true;   // "Save password?" prompt, stored per profile
         web.Settings.IsGeneralAutofillEnabled = true;
         SetMemoryLevel(tab, visible: ActiveTab == tab);
@@ -671,7 +837,8 @@ public partial class MainWindow : Window
             if (_current != p) SelectProfileQuietly(p);
             if (_current != p) await ShowProfileAsync(p, openPages: false);
             var popup = await NewTabAsync(p, null);
-            args.NewWindow = popup.View!.CoreWebView2;
+            if (popup.View?.CoreWebView2 is { } popupWeb) args.NewWindow = popupWeb;
+            else args.Handled = true;   // its engine could not start: no window, and nothing was sent
             deferral.Complete();
         };
         // window.close() from a popup (e.g. a login window finishing) closes its tab.
@@ -691,13 +858,24 @@ public partial class MainWindow : Window
         TrimMemory();
     }
 
-    Task<CoreWebView2Environment> CreateEnvironmentAsync()
+    // The engine for profiles without a proxy (proxy == null), or the separate engine for one proxy.
+    // Low RAM starts the engine without GPU acceleration (about 25% less memory); it applies from the next start.
+    Task<CoreWebView2Environment> CreateEnvironmentAsync(ProxySpec? proxy = null)
     {
-        // Low RAM starts the engine without GPU acceleration (about 25% less memory); it applies from the next start.
-        var args = !string.IsNullOrWhiteSpace(_settings.BrowserArguments) ? _settings.BrowserArguments
-            : _settings.Mode == AppSettings.LowMemory ? "--disable-gpu" : "";
+        var args = ProxySpec.EngineArguments(proxy, _settings);
         var options = args == "" ? null : new CoreWebView2EnvironmentOptions { AdditionalBrowserArguments = args };
-        return CoreWebView2Environment.CreateAsync(null, ProfileStore.DataDir, options);
+        return CoreWebView2Environment.CreateAsync(null, ProfileStore.DataDirFor(proxy), options);
+    }
+
+    // A profile with a proxy never falls back to the default engine: if its own engine cannot start, it throws,
+    // so the profile's traffic cannot go out directly.
+    async Task<CoreWebView2Environment> EnvForAsync(Profile p)
+    {
+        if (p.ProxySpec is not { } proxy) return _env!;
+        if (_proxyEnvs.TryGetValue(proxy.Server, out var known)) return known;
+        var created = await CreateEnvironmentAsync(proxy);
+        _proxyEnvs[proxy.Server] = created;
+        return created;
     }
 
     // Shows the site's icon on its tab (a small 32 px copy, so it costs almost no memory).
@@ -744,6 +922,7 @@ public partial class MainWindow : Window
                 tab.View = null;
                 tab.IsLoading = false;
             }
+            _proxyEnvs.Clear();   // proxy engines are started again, when a tab needs one
             _env = await CreateEnvironmentAsync();
             if (_current?.Active is { } active) SelectTab(active);   // reload what was on screen
         }
@@ -1044,8 +1223,8 @@ public partial class MainWindow : Window
         try { bytes += Process.GetCurrentProcess().PrivateMemorySize64; } catch (Exception) { }
         try
         {
-            if (_env != null)
-                foreach (var info in _env.GetProcessInfos())
+            foreach (var env in _proxyEnvs.Values.Prepend(_env).OfType<CoreWebView2Environment>())
+                foreach (var info in env.GetProcessInfos())
                     try { bytes += Process.GetProcessById(info.ProcessId).PrivateMemorySize64; } catch (Exception) { }
         }
         catch (Exception) { }
@@ -1109,6 +1288,8 @@ public partial class MainWindow : Window
         // Only while the user is typing, not when a page navigation rewrites the address.
         if (!Address.IsKeyboardFocusWithin) { SuggestPopup.IsOpen = false; return; }
         var hits = _suggestions.Matching(Address.Text, 6);
+        foreach (var portal in OtaCatalog.Matching(Address.Text, 6))   // known OTA portals fill the remaining slots
+            if (hits.Count < 6 && !hits.Any(h => SuggestionStore.Normalize(h) == SuggestionStore.Normalize(portal))) hits.Add(portal);
         SuggestList.ItemsSource = hits;
         SuggestList.SelectedIndex = -1;
         SuggestPopup.IsOpen = hits.Count > 0;
@@ -1154,12 +1335,31 @@ public partial class MainWindow : Window
         ActiveWeb?.Navigate(url);
     }
 
-    static string Normalize(string text)
+    string Normalize(string text) => SearchEngines.ToUrl(text, _settings.SearchEngine);
+
+    // The search button next to the address bar: pick the engine used for text that is not an address.
+    void SearchEngine_Click(object sender, RoutedEventArgs e)
     {
-        text = text.Trim();
-        if (text.Contains("://") || text.StartsWith("about:")) return text;
-        if (!text.Contains(' ') && (text.Contains('.') || text.StartsWith("localhost"))) return "https://" + text;
-        return "https://www.google.com/search?q=" + Uri.EscapeDataString(text);
+        var menu = new ContextMenu { PlacementTarget = SearchBtn, Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom };
+        foreach (var engine in SearchEngines.All)
+        {
+            var item = new MenuItem
+            {
+                Header = $"{engine.Name}    ({engine.Keywords[0]} ...)", IsCheckable = true,
+                IsChecked = engine.Id == _settings.SearchEngine,
+            };
+            var chosen = engine;
+            item.Click += (_, _) => { _settings.SearchEngine = chosen.Id; _settings.Save(); UpdateSearchButton(); };
+            menu.Items.Add(item);
+        }
+        menu.IsOpen = true;
+    }
+
+    void UpdateSearchButton()
+    {
+        var engine = SearchEngines.Get(_settings.SearchEngine);
+        SearchBtn.ToolTip = $"Search engine: {engine.Name}. Type a keyword first to use another once, e.g. \"ddg hotel rates\".";
+        Address.ToolTip = $"Type an address, or search with {engine.Name}";
     }
 
     // Ctrl+T new tab, Ctrl+W close tab, Ctrl+L address bar, Ctrl+K profile search. Top-level page only.

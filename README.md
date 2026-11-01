@@ -20,6 +20,34 @@ It is a thin shell (a few MB) around the Microsoft Edge WebView2 engine that shi
 - Colour bar and window title show which client profile you are in.
 - Popups (OAuth, login windows) open as tabs in the same profile and keep `window.opener`.
 - Shortcuts: Ctrl+T new tab, Ctrl+W close tab, Ctrl+L address bar, Ctrl+K profile search, middle-click closes a tab.
+- OTA portals: a built-in list of extranet and channel-manager sign-in pages, one click to add as home pages (see below).
+- Search engines: Google, DuckDuckGo, Bing, Brave Search, Yahoo, Ecosia, Startpage and Qwant. Pick the default with the magnifier button next to the address bar, or start a search with a keyword to use another once (`ddg hotel rates`, `b ...`, `br ...`, `g ...`, `y ...`, `e ...`, `sp ...`, `q ...`).
+- Ad and tracker blocking, per-profile proxy: see the sections below.
+- Update button (bottom of the profile panel): checks GitHub only when you click it. See "Updates".
+- App icon: drawn by `tools\make-icon.ps1`, which writes `assets\icon.ico` and `assets\logo.png`.
+
+## OTA portals
+
+**OTA portals...** in the profile dialog (and in Launch site...) lists the sign-in pages below. Typing a portal's name in the address bar also suggests it. They were checked on 1 Nov 2026 by opening each in this browser's own engine (`tools\check-sites.ps1`): every one below loaded with HTTP 200 and showed a sign-in page. **That only proves the page opens here; I could not sign in, so your own login is untested.**
+
+| Group | Portals |
+|---|---|
+| OTA extranets | Booking.com Extranet, Expedia Partner Central (also Hotels.com, Vrbo), Agoda YCS, Airbnb Hosting, Trip.com eBooking, Hostelworld Inbox, Google Hotel Center |
+| India OTAs | Goibibo / MakeMyTrip Extranet (Ingo-MMT), MakeMyTrip Partner |
+| Channel managers and hotel software | AxisRooms (Hotelogix), Aiosell, Simplotel, Djubo, SiteMinder, Little Hotelier, Cloudbeds, HotelRunner, Beds24, WuBook |
+
+Caveats from the check: Agoda YCS loaded the Agoda Partner Portal sign-in but the form was not detected by the probe; HotelRunner's sign-in page loaded but its text mentions a bot check; Google Hotel Center goes to Google sign-in, which can refuse sign-in inside embedded browsers (only that first page was checked).
+
+**Not in the list** because no working address was found (the guesses did not resolve, returned 404, timed out, or only reached a marketing page): Cleartrip, Yatra, EaseMyTrip, ixigo, OYO (its partner pages are sign-up pages, not an extranet login), Treebo, FabHotels, Traveloka, Tiket.com, Vrbo, eZee, Hotelogix's own login, RezNext (the domain is for sale), ResAvenue and Trivago Hotel Manager (timed out), STAAH Max (blank page). Use the address from your onboarding email and add it as a home page; a verified address can be added to `OtaCatalog.cs`. Re-run the check any time:
+
+```powershell
+powershell -File tools\check-sites.ps1                       # the built-in portals and search engines
+powershell -File tools\check-sites.ps1 -List mine.json       # your own [ { "Name": "...", "Url": "https://..." } ] list
+```
+
+## Updates
+
+The **v0.4.0 - check for updates** button at the bottom of the profile panel asks GitHub for the latest release when you press it (nothing is contacted before that). If a newer version exists it offers to update. It downloads the matching exe (`small` or `standalone`, chosen by the size of the one you run) only from GitHub over HTTPS, checks it against the SHA-256 that GitHub publishes for that file, swaps it in for the running exe (the old one is kept as `LightBrowser.exe.old` until the next start) and restarts. Profiles, logins and settings are separate files and are not touched. A development build, a read-only folder, or a release without a published checksum opens the release page instead, for a manual download. The exes are not code-signed.
 
 ## Memory
 
@@ -32,6 +60,23 @@ Change the limits in `%LocalAppData%\LightBrowser\settings.json` and restart:
 ```
 
 An unloaded tab loses unsaved page state (text typed into a form, scroll position), so finish forms before leaving a tab for a long time.
+
+## Proxy per profile
+
+Each profile can send all its traffic through its own proxy, so each client account comes from its own IP address. Set it in the profile's New/Edit dialog: `host:port` (HTTP), or `https://`, `socks4://`, `socks5://` in front. HTTP and HTTPS proxies can have a user name and password; the password is stored encrypted for your Windows account and never as plain text. SOCKS proxies that need a login are not supported.
+
+- If the proxy is down, pages do not load. They never fall back to your own connection.
+- A proxied engine is started with Chromium's switch that stops WebRTC sending UDP outside the proxy (set, but not yet checked against a leak-test site).
+- The proxy is an engine-wide setting, so every distinct proxy runs its own browser engine and data folder (`WebView2Data-px-...`). Profiles without a proxy share the normal engine. Each extra proxy costs one more set of browser processes (memory not measured yet), so many profiles on the same proxy share one, while many different proxies add up.
+- A profile's logins stay with the proxy they were made through. Changing a profile's proxy asks first, then signs it out of every site (saved passwords in the password list are kept).
+- A duplicated profile does not copy the proxy, so two accounts do not end up on the same IP by accident.
+- Addresses on your own machine (localhost) bypass the proxy, as in Chrome.
+
+## Ad and tracker blocking
+
+The **Blocking** button in the toolbar turns blocking on or off (on by default; the number is requests blocked since the app started). A request is blocked, before it leaves the browser, when its host or a parent domain is on the list: a short built-in set of ad networks and trackers, plus your own `blocklist.txt` in the data folder (created on first run; one domain per line, `0.0.0.0 domain` hosts lines and `||domain^` lines also work; restart after editing). The built-in list is deliberately small and leaves out sites that also serve real content (Google, Facebook), so pages keep working.
+
+This is a content blocker inside the browser, not a system firewall: it does not filter other apps, has no malware feed, and does no page cosmetic filtering. Every request passes through a quick list lookup while blocking is on.
 
 ## Modes
 
@@ -89,6 +134,7 @@ A site is saved to the common suggestions only when its top-level page finishes 
 ```powershell
 dotnet test tests\LightBrowser.Tests                  # unit tests (storage, recovery, suggestions, groups)
 powershell -File tests\e2e\e2e.ps1                    # end-to-end against the real app
+powershell -File tests\e2e\update.ps1                 # the Update button, against a local stand-in for GitHub (publishes two builds)
 ```
 
 The end-to-end script runs the app on a throwaway data folder (`LIGHTBROWSER_HOME`) against a local test server and checks session isolation between two profiles on the same site, login persistence across restarts, that the tab limit does not log anyone out, and renderer/browser crash recovery. Set `LIGHTBROWSER_HOME` yourself to run LightBrowser from a different data folder (for example a USB stick).
@@ -97,4 +143,4 @@ The end-to-end script runs the app on a throwaway data folder (`LIGHTBROWSER_HOM
 
 - This is not an anti-detect browser. All profiles share your IP address and device fingerprint, so it will not get around a site that blocks several accounts from one machine.
 - Passwords are only as safe as your Windows login.
-- No history, bookmarks, download manager or per-profile proxy.
+- No bookmarks or download manager.

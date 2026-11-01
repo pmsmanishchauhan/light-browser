@@ -24,6 +24,13 @@ public class ProfileDialog : Window
     readonly TextBox _group = NewField();
     readonly TextBox _notes = NewField();
     readonly TextBox _urls = NewField();
+    readonly TextBox _proxy = NewField();
+    readonly TextBox _proxyUser = NewField();
+    readonly PasswordBox _proxyPassword = new()
+    {
+        Background = Field, Foreground = Fg, BorderBrush = FieldBorder, CaretBrush = Fg,
+        Padding = new Thickness(6, 4, 6, 4), Margin = new Thickness(0, 4, 0, 0),
+    };
     readonly List<Border> _swatches = new();
     readonly StackPanel _groupChips = new();
     readonly StackPanel _nameChips = new();
@@ -52,6 +59,32 @@ public class ProfileDialog : Window
         _group.Text = existing?.Group ?? "";
         _notes.Text = existing?.Notes ?? "";
         _urls.Text = string.Join(Environment.NewLine, existing?.HomeUrls ?? new List<string>());
+        _proxy.Text = existing?.Proxy ?? "";
+        _proxyUser.Text = existing?.ProxyUser ?? "";
+        _proxyPassword.Password = existing?.ProxyPassword ?? "";
+        _proxy.ToolTip = "Everything this profile loads goes through this proxy, so it shows the proxy's IP address.\n" +
+                         "Examples: 1.2.3.4:8080   socks5://host:1080   https://host:443\n" +
+                         "If the proxy is down, pages do not load (they never fall back to your own connection).";
+
+        var proxyLogin = new Grid { Margin = new Thickness(0, 0, 0, 0) };
+        proxyLogin.ColumnDefinitions.Add(new ColumnDefinition());
+        proxyLogin.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) });
+        proxyLogin.ColumnDefinitions.Add(new ColumnDefinition());
+        _proxyUser.ToolTip = "Proxy user name (HTTP and HTTPS proxies only; SOCKS proxies with a login are not supported)";
+        proxyLogin.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        proxyLogin.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var userCaption = Label("Proxy user (if it needs one)", 6);
+        var passCaption = Label("Proxy password", 6);
+        Grid.SetColumn(userCaption, 0);
+        Grid.SetColumn(passCaption, 2);
+        Grid.SetRow(_proxyUser, 1);
+        Grid.SetRow(_proxyPassword, 1);
+        Grid.SetColumn(_proxyUser, 0);
+        Grid.SetColumn(_proxyPassword, 2);
+        proxyLogin.Children.Add(userCaption);
+        proxyLogin.Children.Add(passCaption);
+        proxyLogin.Children.Add(_proxyUser);
+        proxyLogin.Children.Add(_proxyPassword);
 
         var swatchRow = new WrapPanel { Margin = new Thickness(0, 4, 0, 0) };
         for (var i = 0; i < Colors.Length; i++)
@@ -77,6 +110,13 @@ public class ProfileDialog : Window
         ok.Click += (_, _) =>
         {
             if (string.IsNullOrWhiteSpace(_name.Text)) { _name.Focus(); return; }
+            if (_proxy.Text.Trim() != "" && ProxySpec.Parse(_proxy.Text) == null)
+            {
+                MessageBox.Show(this, "That proxy address is not valid.\n\nUse host:port, for example 1.2.3.4:8080, or put socks5:// in front for a SOCKS proxy.",
+                    "Proxy", MessageBoxButton.OK, MessageBoxImage.Information);
+                _proxy.Focus();
+                return;
+            }
             DialogResult = true;
         };
         var cancel = NewButton("Cancel");
@@ -99,9 +139,29 @@ public class ProfileDialog : Window
         panel.Children.Add(swatchRow);
         panel.Children.Add(Label("Home pages (one URL per line)", 12));
         panel.Children.Add(_urls);
+        var otaBtn = NewButton("OTA portals...");
+        otaBtn.Width = double.NaN;
+        otaBtn.HorizontalAlignment = HorizontalAlignment.Left;
+        otaBtn.Padding = new Thickness(12, 5, 12, 5);
+        otaBtn.Margin = new Thickness(0, 6, 0, 0);
+        otaBtn.ToolTip = "Pick OTA extranet and channel-manager sign-in pages to add as home pages";
+        otaBtn.Click += (_, _) =>
+        {
+            var picker = new OtaPickerDialog(HomeUrls) { Owner = this };
+            if (picker.ShowDialog() != true) return;
+            foreach (var portal in picker.Selected)
+            {
+                var text = _urls.Text;
+                _urls.Text = (text.Length == 0 || text.EndsWith('\n') ? text : text + Environment.NewLine) + portal.Url;
+            }
+        };
+        panel.Children.Add(otaBtn);
         panel.Children.Add(_groupChips);
         if (BuildChips("Suggested sites (worked before, shared by all groups)", (suggestions ?? new List<string>()).Reverse().ToList()) is { } common)
             panel.Children.Add(common);
+        panel.Children.Add(Label("Proxy (optional, e.g. 1.2.3.4:8080 or socks5://host:1080)", 12));
+        panel.Children.Add(_proxy);
+        panel.Children.Add(proxyLogin);
         panel.Children.Add(Label("Notes (optional, shown on hover)", 12));
         panel.Children.Add(_notes);
         panel.Children.Add(buttons);
@@ -226,6 +286,13 @@ public class ProfileDialog : Window
     public string Notes => _notes.Text.Trim();
 
     public string ColorHex => Colors[_selected].Hex;
+
+    // The normalised proxy address, or empty for a direct connection. The login is only kept with a proxy.
+    public string Proxy => ProxySpec.Parse(_proxy.Text)?.Server ?? "";
+
+    public string ProxyUser => Proxy == "" ? "" : _proxyUser.Text.Trim();
+
+    public string ProxyPassword => Proxy == "" || ProxyUser == "" ? "" : _proxyPassword.Password;
 
     public List<string> HomeUrls => _urls.Text
         .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)

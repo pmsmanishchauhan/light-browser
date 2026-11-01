@@ -116,6 +116,17 @@ public class LaunchDialog : Window
         var top = new StackPanel();
         top.Children.Add(Label("Website to open", 0));
         top.Children.Add(_url);
+        var otaBtn = Button("OTA portals...", 0);
+        otaBtn.Padding = new Thickness(10, 3, 10, 3);
+        otaBtn.Margin = new Thickness(0, 6, 6, 0);
+        otaBtn.HorizontalAlignment = HorizontalAlignment.Left;
+        otaBtn.ToolTip = "Pick an OTA extranet or channel-manager sign-in page";
+        otaBtn.Click += (_, _) =>
+        {
+            var picker = new OtaPickerDialog(Array.Empty<string>(), single: true) { Owner = this };
+            if (picker.ShowDialog() == true && picker.Selected.FirstOrDefault() is { } portal) _url.Text = portal.Url;
+        };
+        top.Children.Add(otaBtn);
         top.Children.Add(chips);
         top.Children.Add(Label("Profiles", 6));
         top.Children.Add(_filter);

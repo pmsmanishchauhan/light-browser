@@ -139,7 +139,18 @@ try {
     # Client C has four home pages, used by the modes check.
     $profiles += @{ Id = 'e2eccccccccc'; Name = 'Client C (four tabs)'; Color = '#F5A442'; HomeUrls = @(1..4 | ForEach-Object { "$origin/whoami?p=C$_" }); OpenUrls = @(); Group = ''; Notes = ''; IsDeleted = $false }
     $profiles += @{ Id = 'e2eddddddddd'; Name = 'Client D (login form)'; Color = '#A06CF0'; HomeUrls = @("$origin/form"); OpenUrls = @(); Group = ''; Notes = ''; IsDeleted = $false }
+    # Client E goes through a proxy that wants a login (checked in phase 8); client F connects directly.
+    # The proxy password is stored the way the app stores it: DPAPI, bound to the profile id.
+    Add-Type -AssemblyName System.Security
+    $pport = Get-Random -Minimum 40001 -Maximum 50000
+    $plog = Join-Path $home1 'proxy.log'
+    $entropy = [Text.Encoding]::UTF8.GetBytes('LightBrowser.proxy.v1.e2eeeeeeeeee')
+    $proxyPassword = [Convert]::ToBase64String([Security.Cryptography.ProtectedData]::Protect([Text.Encoding]::UTF8.GetBytes('px-pass-1'), $entropy, 'CurrentUser'))
+    $profiles += @{ Id = 'e2eeeeeeeeee'; Name = 'Client E (proxy)'; Color = '#E5575B'; HomeUrls = @('http://ota.test/whoami?p=E'); OpenUrls = @(); Group = ''; Notes = ''; IsDeleted = $false;
+                    Proxy = "http://127.0.0.1:$pport"; ProxyUser = 'pxuser'; ProxyPasswordProtected = $proxyPassword }
+    $profiles += @{ Id = 'e2effffffffff'; Name = 'Client F (direct)'; Color = '#2BB5B5'; HomeUrls = @("$origin/whoami?p=F"); OpenUrls = @(); Group = ''; Notes = ''; IsDeleted = $false }
     ConvertTo-Json -InputObject $profiles -Depth 5 | Set-Content (Join-Path $home1 'profiles.json') -Encoding utf8
+    "# test list`r`ntracker.test" | Set-Content (Join-Path $home1 'blocklist.txt') -Encoding ascii   # blocked in phase 8
 
     '1. Two profiles, same site, different accounts, at the same time'
     Start-App                      # profile A opens first and runs its home page (login, then redirect)
@@ -270,9 +281,70 @@ try {
     (Find-ByName (Main-Win) 'Toggle profile panel').GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
     Start-Sleep 2
     Check 'showing it again restores the panel' (($null -ne (Find-ById (Main-Win) 'SearchBox')) -and ((Sidebar-Collapsed) -eq $false))
+
+    '8. Per-profile proxy: one profile through an authenticating proxy, another direct'
+    # A small proxy that demands a login: 407 until the right Proxy-Authorization arrives, then a page.
+    $proxyJob = Start-Job -ArgumentList $pport, $plog -ScriptBlock {
+        param($pport, $plog)
+        $l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $pport); $l.Start()
+        while ($true) {
+            $c = $l.AcceptTcpClient()
+            try {
+                $s = $c.GetStream(); $s.ReadTimeout = 3000
+                $buf = New-Object byte[] 8192; $head = ''
+                while ($head -notmatch "`r`n`r`n") {
+                    $n = $s.Read($buf, 0, $buf.Length); if ($n -le 0) { break }
+                    $head += [Text.Encoding]::ASCII.GetString($buf, 0, $n)
+                }
+                if ($head -ne '') {
+                    $first = ($head -split "`r`n")[0]
+                    $auth = ''; if ($head -match '(?im)^Proxy-Authorization: (.+)$') { $auth = $Matches[1].Trim() }
+                    Add-Content $plog "$first|$auth"
+                    if ($first -like 'CONNECT*') { $r = "HTTP/1.1 502 Bad Gateway`r`nContent-Length: 0`r`nConnection: close`r`n`r`n" }
+                    elseif ($auth -eq '') { $r = "HTTP/1.1 407 Proxy Authentication Required`r`nProxy-Authenticate: Basic realm=`"e2e`"`r`nContent-Length: 0`r`nConnection: close`r`n`r`n" }
+                    else {
+                        $body = '<html><head><title>via proxy</title></head><body>ok<img src="http://tracker.test/px.gif"><img src="http://allowed.test/px.gif"><img src="http://pagead.doubleclick.net/px.gif"></body></html>'
+                        $r = "HTTP/1.1 200 OK`r`nContent-Type: text/html`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n$body"
+                    }
+                    $out = [Text.Encoding]::ASCII.GetBytes($r); $s.Write($out, 0, $out.Length)
+                }
+            } catch { } finally { $c.Close() }
+        }
+    }
+    Start-Sleep 1
+    Remove-Item $log -ErrorAction SilentlyContinue
+    Select-Profile 4                # Client E
+    # The page's images load after the page; wait for the last one that is allowed through (slow machines need a while).
+    $t = Get-Date
+    while (((Get-Date) - $t).TotalSeconds -lt 30 -and @(Get-Content $plog -ErrorAction SilentlyContinue | Where-Object { $_ -like '*allowed.test*' }).Count -eq 0) { Start-Sleep 1 }
+    Start-Sleep 3                   # so a request that should have been blocked would have shown up by now
+    $expected = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes('pxuser:px-pass-1'))
+    $viaProxy = @(Get-Content $plog -ErrorAction SilentlyContinue | Where-Object { $_ -like 'GET http://ota.test/whoami?p=E *' })
+    Check "E's page request went to the proxy" ($viaProxy.Count -ge 1) ($viaProxy -join ';')
+    Check "the proxy was given E's login (after its 407 challenge)" (@($viaProxy | Where-Object { $_.EndsWith('|' + $expected) }).Count -ge 1) ($viaProxy -join ';')
+    Check "E's traffic never reached the site directly" ((Requests '*p=E*').Count -eq 0)
+    $engine = @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -like '*WebView2Data-px-*' -and $_.CommandLine -like '*--proxy-server=*' -and $_.CommandLine -notlike '*--type=*' })
+    Check 'the proxied profile runs in its own engine, started with the proxy' ($engine.Count -ge 1)
+    Check 'the proxy password is not stored as plain text' ((Get-Content (Join-Path $home1 'profiles.json') -Raw) -notmatch 'px-pass-1')
+    $seen = @(Get-Content $plog | Where-Object { $_ -like '*://*' })
+    Check 'a normal third-party image was requested' (@($seen | Where-Object { $_ -like '*allowed.test*' }).Count -ge 1) ($seen -join ';')
+    Check 'a domain from blocklist.txt was blocked before it left the browser' (@($seen | Where-Object { $_ -like '*tracker.test*' }).Count -eq 0)
+    Check 'a built-in ad domain was blocked' (@($seen | Where-Object { $_ -like '*doubleclick.net*' }).Count -eq 0)
+    function Block-Setting { (Get-Content (Join-Path $home1 'settings.json') -Raw | ConvertFrom-Json).BlockTrackers }
+    $blockBtn = Find-ByName (Main-Win) 'Blocking'
+    Check 'the Blocking button is in the toolbar' ($null -ne $blockBtn)
+    $blockBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); Start-Sleep 1
+    Check 'turning blocking off is saved' ((Block-Setting) -eq $false) (Block-Setting)
+    $blockBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); Start-Sleep 1
+    Check 'turning it back on is saved' ((Block-Setting) -eq $true) (Block-Setting)
+    Select-Profile 5                # Client F
+    Check "F connected directly to the site" ((Requests '/whoami?p=F|*').Count -ge 1)
+    Check "F's traffic did not go through E's proxy" (@(Get-Content $plog | Where-Object { $_ -like '*p=F*' }).Count -eq 0)
+    Check 'the proxy never saw the site that F visited' (@(Get-Content $plog | Where-Object { $_ -like "*localhost:$port*" }).Count -eq 0)
 }
 finally {
     Stop-App
+    if ($proxyJob) { Stop-Job $proxyJob -ErrorAction SilentlyContinue; Remove-Job $proxyJob -Force -ErrorAction SilentlyContinue }
     Stop-Job $server -ErrorAction SilentlyContinue; Remove-Job $server -Force -ErrorAction SilentlyContinue
     Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -like "*$home1*" } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
