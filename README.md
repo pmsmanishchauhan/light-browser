@@ -151,6 +151,21 @@ powershell -File tests\e2e\update.ps1                 # the Update button, again
 
 The end-to-end script runs the app on a throwaway data folder (`LIGHTBROWSER_HOME`) against a local test server and checks session isolation between two profiles on the same site, login persistence across restarts, that the tab limit does not log anyone out, and renderer/browser crash recovery. Set `LIGHTBROWSER_HOME` yourself to run LightBrowser from a different data folder (for example a USB stick).
 
+## Privacy and code signing
+
+- LightBrowser sends nothing to its author: no telemetry, no accounts. It contacts the websites you open (and the
+  Microsoft Edge WebView2 runtime does what it normally does), and `api.github.com` / `github.com` only when you press
+  "check for updates" and confirm an update.
+- Profiles, history, settings and the password vault stay in the data folder on your PC (see "Where data is stored").
+  Saved passwords are encrypted with Windows DPAPI for your Windows account.
+- Code signing (planned): release exes are intended to be signed with a certificate from the SignPath Foundation
+  (free for open-source projects), built from this repository by `.github/workflows/build-release.yml`. Until that
+  is approved the exes are unsigned (see "Windows SmartScreen" above).
+
+## License
+
+MIT, see `LICENSE`.
+
 ## Limits
 
 - This is not an anti-detect browser. All profiles share your IP address and device fingerprint, so it will not get around a site that blocks several accounts from one machine.

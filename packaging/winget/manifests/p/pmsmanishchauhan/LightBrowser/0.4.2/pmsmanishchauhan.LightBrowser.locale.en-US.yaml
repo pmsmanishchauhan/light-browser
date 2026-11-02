@@ -6,7 +6,8 @@ Publisher: pmsmanishchauhan
 PublisherUrl: https://github.com/pmsmanishchauhan
 PackageName: LightBrowser
 PackageUrl: https://github.com/pmsmanishchauhan/light-browser
-License: Proprietary
+License: MIT
+LicenseUrl: https://github.com/pmsmanishchauhan/light-browser/blob/main/LICENSE
 ShortDescription: A lightweight multi-profile browser with a separate sign-in for every client account.
 Description: LightBrowser keeps each client's logins in its own profile, loads tabs lazily and unloads idle ones, so it runs on low-end PCs. Needs the Microsoft Edge WebView2 Runtime.
 Moniker: lightbrowser

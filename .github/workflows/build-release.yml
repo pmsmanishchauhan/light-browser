@@ -1,0 +1,62 @@
+# Builds the two release exes on a GitHub-hosted runner (SignPath only signs builds it can trace to the repo),
+# runs the unit tests, and - once the SignPath project exists - has them signed.
+#
+# Run it by hand (Actions > Build release > Run workflow). It does not publish a release: download the signed
+# artifact and attach it with `gh release create`, so the release flow stays as it is today.
+#
+# To turn signing on after SignPath approves the project, add in the repo settings:
+#   variables: SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG, SIGNPATH_POLICY_SLUG (e.g. release-signing)
+#   secret:    SIGNPATH_API_TOKEN
+name: Build release
+on: workflow_dispatch
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Unit tests
+        run: dotnet test tests/LightBrowser.Tests --nologo -v q
+      - name: Publish the small exe (needs the .NET 8 Desktop Runtime)
+        run: dotnet publish LightBrowser.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o out/small --nologo -v q
+      - name: Publish the standalone exe
+        run: dotnet publish LightBrowser.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o out/standalone --nologo -v q
+      - name: Name the files as the release expects
+        shell: pwsh
+        run: |
+          New-Item dist -ItemType Directory | Out-Null
+          Copy-Item out/small/LightBrowser.exe dist/LightBrowser-small.exe
+          Copy-Item out/standalone/LightBrowser.exe dist/LightBrowser-standalone.exe
+      - name: Upload the unsigned exes
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned
+          path: dist/*.exe
+
+  sign:
+    needs: build
+    if: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
+    runs-on: windows-latest
+    steps:
+      - uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          github-artifact-id: ${{ needs.build.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed
+          path: signed/*.exe
