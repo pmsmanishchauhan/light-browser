@@ -55,6 +55,8 @@ The **check for updates** button (it shows the version you run, for example "v0.
 
 If you download a newer exe yourself and open it while an older copy is running (same data folder), the newer one asks the older to close (it saves its tabs like a normal close), waits for it, then starts in its place. Opening the same or an older version just brings the running window forward and never downgrades it. The running copy writes `instance.txt` in the data folder (process, version, exe) for this; versions before 0.4.2 write none, so they are only replaced when exactly one other LightBrowser is running.
 
+**Windows SmartScreen:** the exes are not code-signed, so Windows may show "Windows protected your PC" the first time you open one downloaded in a browser. Click **More info**, then **Run anyway**; or right-click the file, choose Properties and tick **Unblock** before opening it. Files the Update button downloads, and files copied from a shared drive or USB stick, carry no such mark and open without it. `packaging\winget\` holds a winget manifest (`winget install` files do not show the prompt); it is not published yet.
+
 **Desktop shortcut:** the first launch creates `LightBrowser.lnk` on the desktop. Delete it and it stays deleted; if you move the exe and the shortcut's target is gone, the next launch repairs it. Runs with a test data folder (`LIGHTBROWSER_HOME`) do not touch the desktop unless `LIGHTBROWSER_DESKTOP_DIR` names a folder.
 
 ## Memory

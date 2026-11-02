@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: pmsmanishchauhan.LightBrowser
+PackageVersion: 0.4.2
+PackageLocale: en-US
+Publisher: pmsmanishchauhan
+PublisherUrl: https://github.com/pmsmanishchauhan
+PackageName: LightBrowser
+PackageUrl: https://github.com/pmsmanishchauhan/light-browser
+License: Proprietary
+ShortDescription: A lightweight multi-profile browser with a separate sign-in for every client account.
+Description: LightBrowser keeps each client's logins in its own profile, loads tabs lazily and unloads idle ones, so it runs on low-end PCs. Needs the Microsoft Edge WebView2 Runtime.
+Moniker: lightbrowser
+Tags:
+- browser
+- profiles
+- webview2
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

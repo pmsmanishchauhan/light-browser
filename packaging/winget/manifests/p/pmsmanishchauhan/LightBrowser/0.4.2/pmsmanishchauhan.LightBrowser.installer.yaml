@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: pmsmanishchauhan.LightBrowser
+PackageVersion: 0.4.2
+InstallerType: portable
+Commands:
+- lightbrowser
+ReleaseDate: 2026-11-01
+Installers:
+- Architecture: x64
+  InstallerUrl: https://github.com/pmsmanishchauhan/light-browser/releases/download/v0.4.2/LightBrowser-standalone.exe
+  InstallerSha256: 7EF2941E89B7D9F8FF497141AFBBB6747E46A6A137349FDB85DA9ED022788777
+ManifestType: installer
+ManifestVersion: 1.6.0
