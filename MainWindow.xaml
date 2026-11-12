@@ -167,7 +167,7 @@
                          ScrollViewer.HorizontalScrollBarVisibility="Hidden"
                          ScrollViewer.VerticalScrollBarVisibility="Disabled"
                          SelectionChanged="TabList_SelectionChanged"
-                         PreviewMouseDown="TabList_PreviewMouseDown"
+                         PreviewMouseDown="TabList_PreviewMouseDown" MouseDoubleClick="TabList_MouseDoubleClick"
                          PreviewMouseWheel="TabList_PreviewMouseWheel">
                     <ListBox.ItemsPanel>
                         <ItemsPanelTemplate>
@@ -271,6 +271,8 @@
                                      Background="Transparent" BorderThickness="0" Foreground="{StaticResource TextBrush}"
                                      CaretBrush="{StaticResource TextBrush}" SelectionBrush="{StaticResource PrimaryBrush}"
                                      KeyDown="Address_KeyDown" PreviewKeyDown="Address_PreviewKeyDown"
+                                     PreviewMouseLeftButtonDown="Address_PreviewMouseDown"
+                                     AutomationProperties.Name="Address bar"
                                      TextChanged="Address_TextChanged" LostKeyboardFocus="Address_LostFocus"/>
                         </Grid>
                     </Border>
@@ -280,8 +282,37 @@
                     <Border Background="{StaticResource BarBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
                             CornerRadius="10" Padding="2" MinWidth="{Binding ActualWidth, ElementName=Address}">
                         <ListBox x:Name="SuggestList" Background="Transparent" BorderThickness="0"
-                                 ItemContainerStyle="{StaticResource Item}"
-                                 PreviewMouseLeftButtonDown="SuggestList_PreviewMouseLeftButtonDown"/>
+                                 ItemContainerStyle="{StaticResource Item}" MaxWidth="760"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 PreviewMouseLeftButtonDown="SuggestList_PreviewMouseLeftButtonDown">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="26"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="{Binding Glyph}" FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons" FontSize="12"
+                                                   Foreground="{StaticResource DimBrush}" VerticalAlignment="Center"/>
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock Text="{Binding Detail}" FontSize="11" Foreground="{StaticResource DimBrush}"
+                                                       TextTrimming="CharacterEllipsis">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Style.Triggers>
+                                                            <Trigger Property="Text" Value="">
+                                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                            </Trigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                        </StackPanel>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
                     </Border>
                 </Popup>
                 <!-- Quick profile switcher, used when the left panel is hidden. A popup, because nothing

@@ -40,16 +40,17 @@ public static class OtaCatalog
     };
 
     // Portals whose name or address contains the typed text, name matches first. Used by the address bar.
-    public static List<string> Matching(string query, int max)
+    public static List<string> Matching(string query, int max) => Find(query, max).Select(p => p.Url).ToList();
+
+    public static List<OtaPortal> Find(string query, int max)
     {
         query = query.Trim();
-        if (query.Length < 2) return new List<string>();
+        if (query.Length < 2) return new List<OtaPortal>();
         return All
             .Where(p => p.Name.Contains(query, StringComparison.OrdinalIgnoreCase) ||
                         p.Url.Contains(query, StringComparison.OrdinalIgnoreCase))
             .OrderByDescending(p => p.Name.StartsWith(query, StringComparison.OrdinalIgnoreCase))
             .Take(max)
-            .Select(p => p.Url)
             .ToList();
     }
 }

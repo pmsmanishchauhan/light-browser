@@ -170,6 +170,9 @@ public class BrowserTab : INotifyPropertyChanged
 
     public bool IsLoading { get; set; }
 
+    // A tab opened in the background (Ctrl/middle-click) is not unloaded before it has had time to start loading.
+    public DateTime ProtectedUntil { get; set; }
+
     // Consecutive renderer crashes without a successful load; stops endless auto-reload.
     public int Crashes { get; set; }
 

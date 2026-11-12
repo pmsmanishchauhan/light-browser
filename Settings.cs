@@ -46,6 +46,10 @@ public class AppSettings
     // so a settings file written by an earlier version (which saved Google as the default) does not pin it.
     public bool SearchEngineSetByUser { get; set; }
 
+    // Keeps sign-ins that websites make with session cookies across restarts and unloaded tabs (see SignInKeeper).
+    // Set to false in settings.json to get the engine's normal behaviour: those logins end when the profile's pages close.
+    public bool KeepSignIns { get; set; } = true;
+
     // True once the desktop shortcut has been created. After that it is only repaired, so deleting it sticks.
     public bool DesktopShortcutOffered { get; set; }
 

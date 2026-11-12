@@ -40,13 +40,52 @@ public static class SearchEngines
         var text = (input ?? "").Trim();
         if (text.Contains("://") || text.StartsWith("about:", StringComparison.OrdinalIgnoreCase)) return text;
 
-        var space = text.IndexOf(' ');
-        if (space > 0 && text[(space + 1)..].Trim() is { Length: > 0 } rest &&
-            All.FirstOrDefault(e => e.Keywords.Contains(text[..space], StringComparer.OrdinalIgnoreCase)) is { } byKeyword)
-            return byKeyword.UrlFor(rest);
+        if (ByKeyword(text, out var rest) is { } byKeyword) return byKeyword.UrlFor(rest);
 
-        if (!text.Contains(' ') && (text.Contains('.') || text.StartsWith("localhost", StringComparison.OrdinalIgnoreCase)))
-            return "https://" + text;
+        if (IsBareAddress(text)) return (IsLocalHost(text) ? "http://" : "https://") + text;
         return Get(defaultEngineId).UrlFor(text);
+    }
+
+    // "ddg hotel rates" -> DuckDuckGo with "hotel rates". Null when the text does not start with an engine keyword
+    // followed by something to search for.
+    public static SearchEngine? ByKeyword(string? input, out string query)
+    {
+        query = "";
+        var text = (input ?? "").Trim();
+        var space = text.IndexOf(' ');
+        if (space <= 0 || text[(space + 1)..].Trim() is not { Length: > 0 } rest) return null;
+        var engine = All.FirstOrDefault(e => e.Keywords.Contains(text[..space], StringComparer.OrdinalIgnoreCase));
+        if (engine != null) query = rest;
+        return engine;
+    }
+
+    // True when Enter would open the text as a web address (or a browser page) rather than search for it.
+    public static bool IsAddress(string? input)
+    {
+        var text = (input ?? "").Trim();
+        if (text.Contains("://") || text.StartsWith("about:", StringComparison.OrdinalIgnoreCase)) return true;
+        return ByKeyword(text, out _) == null && IsBareAddress(text);
+    }
+
+    static bool IsBareAddress(string text) =>
+        text.Length > 0 && !text.Contains(' ') && (text.Contains('.') || HostOf(text).Equals("localhost", StringComparison.OrdinalIgnoreCase));
+
+    // The part before any port, path, query or fragment: "localhost:5000/x" -> "localhost".
+    static string HostOf(string text)
+    {
+        var end = text.IndexOfAny(new[] { '/', '?', '#', ':' });
+        return end < 0 ? text : text[..end];
+    }
+
+    // Development servers, other machines on the home or office network, and *.local names are plain http:
+    // an https:// guess for them would only fail.
+    static bool IsLocalHost(string text)
+    {
+        var host = HostOf(text);
+        return host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+            || host.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase)
+            || host.EndsWith(".local", StringComparison.OrdinalIgnoreCase)
+            || (host.Count(c => c == '.') == 3 && System.Net.IPAddress.TryParse(host, out var ip) &&
+                ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
     }
 }

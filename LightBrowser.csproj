@@ -9,7 +9,7 @@
     <RootNamespace>LightBrowser</RootNamespace>
     <AssemblyName>LightBrowser</AssemblyName>
     <!-- The version the Update button compares with the latest GitHub release. -->
-    <Version>0.4.2</Version>
+    <Version>0.4.3</Version>
     <ApplicationIcon>assets\icon.ico</ApplicationIcon>
   </PropertyGroup>
 

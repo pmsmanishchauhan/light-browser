@@ -59,6 +59,7 @@ RefreshView();
         var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
         timer.Tick += (_, _) =>
         {
+            KeepSignInsOfLoadedProfiles();
             TrimMemory();
             AutoSave();
             _history.Flush();
@@ -90,6 +91,30 @@ RefreshView();
             if (Environment.GetEnvironmentVariable("LIGHTBROWSER_TEST_THROW") == "1")
                 _ = Dispatcher.BeginInvoke(new Action(() => throw new InvalidOperationException("test error from LIGHTBROWSER_TEST_THROW")));
         };
+    }
+
+    // ---- keeping sign-ins ------------------------------------------------------------------
+
+    readonly HashSet<string> _keepPending = new();
+
+    // Soon after a page finishes loading (a sign-in redirect has just set its cookie), once per profile at a time.
+    void ScheduleKeepSignIns(Profile p, CoreWebView2 web)
+    {
+        if (!_settings.KeepSignIns || !_keepPending.Add(p.Id)) return;
+        _ = Task.Delay(TimeSpan.FromSeconds(2)).ContinueWith(_ => Dispatcher.InvokeAsync(async () =>
+        {
+            _keepPending.Remove(p.Id);
+            await SignInKeeper.KeepAsync(web, _blocker.IsBlocked);
+        }), TaskScheduler.Default);
+    }
+
+    // Logins made without a page load (a script sets the cookie) are caught by the 30-second timer.
+    void KeepSignInsOfLoadedProfiles()
+    {
+        if (!_settings.KeepSignIns) return;
+        foreach (var p in _store.Profiles)
+            if (p.Tabs.Select(t => t.View?.CoreWebView2).FirstOrDefault(w => w != null) is { } web)
+                _ = SignInKeeper.KeepAsync(web, _blocker.IsBlocked);
     }
 
     // The shortcut work runs off the UI thread so a slow desktop (network or synced folder) cannot delay the window.
@@ -866,6 +891,7 @@ RefreshView();
             // A page that loaded with a 2xx status is a site that works: remember it for every profile.
             _suggestions.AddIfVerified(web.Source, args.IsSuccess, args.HttpStatusCode);
             if (args.IsSuccess) _history.Record(p.Id, web.Source, web.DocumentTitle);
+            if (args.IsSuccess) ScheduleKeepSignIns(p, web);
         };
         web.HistoryChanged += (_, _) => { if (ActiveTab == tab) UpdateChrome(); };
 
@@ -888,15 +914,27 @@ RefreshView();
         web.NewWindowRequested += async (_, args) =>
         {
             var deferral = args.GetDeferral();
+            // A Ctrl/middle-click on a link opens its tab in the background, as in other browsers. The page tells us
+            // about the click (a moment before or after this event), so give that message a moment to arrive.
+            await Task.Delay(60);
+            var background = DateTime.UtcNow < _openInBackgroundUntil && _current == p;
+            var previous = ActiveTab;
             if (_current != p) SelectProfileQuietly(p);
             if (_current != p) await ShowProfileAsync(p, openPages: false);
             var popup = await NewTabAsync(p, null);
             if (popup.View?.CoreWebView2 is { } popupWeb) args.NewWindow = popupWeb;
             else args.Handled = true;   // its engine could not start: no window, and nothing was sent
+            if (background && previous != null && previous != popup && p.Tabs.Contains(previous) && previous.View != null)
+            {
+                popup.ProtectedUntil = DateTime.UtcNow.AddSeconds(15);
+                _openInBackgroundUntil = DateTime.MinValue;
+                SelectTab(previous);
+            }
             deferral.Complete();
         };
+        web.ContextMenuRequested += (_, args) => AddContextMenuItems(p, web, args);
         // window.close() from a popup (e.g. a login window finishing) closes its tab.
-        web.WindowCloseRequested += (_, _) => Dispatcher.InvokeAsync(() => CloseTabAsync(tab));
+        web.WindowCloseRequested += (_, _) => Dispatcher.InvokeAsync(() => CloseTabAsync(tab, remember: false));
 
         await SetYouTubeAdBlockAsync(tab, web);
 
@@ -907,6 +945,7 @@ RefreshView();
             // Only the page itself may trigger a shortcut, not an embedded frame from another site.
             if (!SameOrigin(args.Source, web.Source)) return;
             var msg = args.TryGetWebMessageAsString();
+            if (msg == "o") { _openInBackgroundUntil = DateTime.UtcNow.AddSeconds(1); return; }
             if (msg is { Length: 1 }) HandleShortcut(msg[0]);
         };
 
@@ -1019,13 +1058,27 @@ RefreshView();
     void DisposeTab(Profile p, BrowserTab tab)
     {
         p.Tabs.Remove(tab);
-        if (tab.View != null)
-        {
-            WebHost.Children.Remove(tab.View);
-            tab.View.Dispose();
-        }
+        if (tab.View != null) RetireView(p, tab.View);
         if (p.Active == tab) p.Active = null;
         ReleaseUnusedProxyEngines();
+    }
+
+    // Takes a tab's page out of the window and disposes it. When it was the profile's last loaded page, its session
+    // cookies are given an expiry first, or the profile would be signed out of everything (see SignInKeeper).
+    void RetireView(Profile p, WebView2 view)
+    {
+        WebHost.Children.Remove(view);
+        var web = view.CoreWebView2;
+        if (_settings.KeepSignIns && web != null && !p.Tabs.Any(t => t.View != null))
+            _ = KeepThenDisposeAsync(view, web);
+        else
+            view.Dispose();
+    }
+
+    async Task KeepThenDisposeAsync(WebView2 view, CoreWebView2 web)
+    {
+        try { await SignInKeeper.KeepAsync(web, _blocker.IsBlocked); }
+        finally { view.Dispose(); }
     }
 
     // A proxy's browser engine only runs while some tab uses it. When the last loaded tab of every profile on a
@@ -1055,11 +1108,12 @@ RefreshView();
         }), System.Windows.Threading.DispatcherPriority.Background);
     }
 
-    async Task CloseTabAsync(BrowserTab tab)
+    async Task CloseTabAsync(BrowserTab tab, bool remember = true)
     {
         var p = _store.Profiles.FirstOrDefault(x => x.Tabs.Contains(tab));
         if (p == null) return;
         var index = p.Tabs.IndexOf(tab);
+        if (remember) RememberClosedTab(p, tab);
         DisposeTab(p, tab);
         if (p != _current) return;
 
@@ -1083,6 +1137,15 @@ RefreshView();
         if ((e.OriginalSource as FrameworkElement)?.DataContext is not BrowserTab tab) return;
         e.Handled = true;
         await CloseTabAsync(tab);
+    }
+
+    // Double-click on the empty part of the tab bar opens a new tab (as in other browsers).
+    async void TabList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Left || e.OriginalSource is not DependencyObject source) return;
+        if (ItemsControl.ContainerFromElement(TabList, source) != null) return;   // on a tab, not the empty space
+        e.Handled = true;
+        await StartNewTabAsync();
     }
 
     async void NewTab_Click(object sender, RoutedEventArgs e) => await StartNewTabAsync();
@@ -1126,7 +1189,7 @@ RefreshView();
 
     bool CanUnload(BrowserTab tab, DateTime now, TimeSpan grace)
     {
-        if (tab == ActiveTab || tab.IsLoading) return false;
+        if (tab == ActiveTab || tab.IsLoading || now < tab.ProtectedUntil) return false;
         if (tab.View?.CoreWebView2 is not { } web) return false;   // still starting up
         return !web.IsDocumentPlayingAudio && now - tab.LastShown > grace;
     }
@@ -1138,8 +1201,9 @@ RefreshView();
         tab.View = null;
         tab.PendingUrl = url == "about:blank" ? null : url;
         tab.IsLoading = false;
-        WebHost.Children.Remove(view);
-        view.Dispose();
+        var owner = _store.Profiles.FirstOrDefault(pr => pr.Tabs.Contains(tab));
+        if (owner != null) RetireView(owner, view);
+        else { WebHost.Children.Remove(view); view.Dispose(); }
         ReleaseUnusedProxyEngines();
     }
 
@@ -1341,15 +1405,32 @@ RefreshView();
 
     void Address_KeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key != Key.Enter) return;
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;   // Alt+Enter arrives as a "system" key
+        if (key != Key.Enter) return;
         e.Handled = true;
-        if (SuggestPopup.IsOpen && SuggestList.SelectedItem is string pick)
+        var inNewTab = (Keyboard.Modifiers & ModifierKeys.Alt) != 0;   // Alt+Enter opens a new tab
+        if (SuggestPopup.IsOpen && SuggestList.SelectedItem is AddressSuggestion pick)
         {
-            OpenSuggestion(pick);
+            OpenSuggestion(pick.Url, inNewTab);
             return;
         }
         SuggestPopup.IsOpen = false;
+        if (inNewTab && _current is { } p)
+        {
+            var url = Normalize(Address.Text);
+            _ = NewTabAsync(p, url);
+            return;
+        }
         ActiveWeb?.Navigate(Normalize(Address.Text));
+        ActiveTab?.View?.Focus();   // so the page, not the address box, gets the next key press
+    }
+
+    // The address of the page in the active tab, as the address bar shows it when you are not typing.
+    string CurrentAddress()
+    {
+        if (ActiveTab is not { } tab) return "";
+        var src = tab.View?.CoreWebView2?.Source ?? tab.PendingUrl;
+        return string.IsNullOrEmpty(src) || src == "about:blank" ? "" : src;
     }
 
     // ---- suggested sites in the address bar -----------------------------------------------
@@ -1373,18 +1454,37 @@ RefreshView();
         UpdateSecurityIcon(Address.Text);
         // Only while the user is typing, not when a page navigation rewrites the address.
         if (!Address.IsKeyboardFocusWithin) { SuggestPopup.IsOpen = false; return; }
-        var hits = _suggestions.Matching(Address.Text, 6);
-        foreach (var portal in OtaCatalog.Matching(Address.Text, 6))   // known OTA portals fill the remaining slots
-            if (hits.Count < 6 && !hits.Any(h => SuggestionStore.Normalize(h) == SuggestionStore.Normalize(portal))) hits.Add(portal);
-        SuggestList.ItemsSource = hits;
+        // The profile's own history only: another client's pages never show up in this client's suggestions.
+        var history = _current == null ? new List<HistoryEntry>() : _history.Search(_current.Id, Address.Text, 12);
+        var sites = _suggestions.Matching(Address.Text, 6);
+        var rows = AddressSuggestions.Build(Address.Text, EffectiveEngineId, history, sites, OtaCatalog.Find(Address.Text, 6));
+        SuggestList.ItemsSource = rows;
         SuggestList.SelectedIndex = -1;
-        SuggestPopup.IsOpen = hits.Count > 0;
+        SuggestPopup.IsOpen = rows.Count > 0;
     }
 
     void Address_LostFocus(object sender, KeyboardFocusChangedEventArgs e) => SuggestPopup.IsOpen = false;
 
+    // A click in the address bar selects the whole address (as in other browsers), so typing replaces it; a second
+    // click, once it has focus, places the caret as usual.
+    void Address_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (Address.IsKeyboardFocusWithin) return;
+        Address.Focus();
+        Address.SelectAll();
+        e.Handled = true;
+    }
+
     void Address_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        // Escape with no list open gives the page's own address back and selects it, undoing a half-typed change.
+        if (e.Key == Key.Escape && !SuggestPopup.IsOpen)
+        {
+            Address.Text = CurrentAddress();
+            Address.SelectAll();
+            e.Handled = true;
+            return;
+        }
         if (!SuggestPopup.IsOpen) return;
         switch (e.Key)
         {
@@ -1407,15 +1507,21 @@ RefreshView();
     void SuggestList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (e.OriginalSource is not DependencyObject source) return;
-        if (ItemsControl.ContainerFromElement(SuggestList, source) is ListBoxItem { DataContext: string url })
+        if (ItemsControl.ContainerFromElement(SuggestList, source) is ListBoxItem { DataContext: AddressSuggestion pick })
         {
-            OpenSuggestion(url);
+            OpenSuggestion(pick.Url, (Keyboard.Modifiers & ModifierKeys.Control) != 0);   // Ctrl+click: new tab
             e.Handled = true;
         }
     }
 
-    void OpenSuggestion(string url)
+    void OpenSuggestion(string url, bool inNewTab = false)
     {
+        SuggestPopup.IsOpen = false;
+        if (inNewTab && _current is { } p)
+        {
+            _ = NewTabAsync(p, url);   // the address box then shows the page being replaced, unchanged until the new tab selects
+            return;
+        }
         Address.Text = url;
         SuggestPopup.IsOpen = false;   // after the text change, which would reopen it
         ActiveWeb?.Navigate(url);
@@ -1483,14 +1589,66 @@ RefreshView();
         Address.ToolTip = $"Type an address, or search with {engine.Name}";
     }
 
-    // Ctrl+T new tab, Ctrl+W close tab, Ctrl+L address bar, Ctrl+K profile search. Top-level page only.
+    // Keys pressed inside a page are reported to the app, because the WPF control hides them (see TabShortcuts for the
+    // list). F5, Ctrl+R and Alt+Left/Right already work inside a page, so they are not forwarded. Top-level page only.
     const string ShortcutScript =
         "window.addEventListener('keydown', e => {" +
         " if (window !== window.top) return;" +
-        " if (!e.ctrlKey || e.altKey || e.shiftKey) return;" +
-        " const k = e.key.toLowerCase();" +
-        " if (k === 't' || k === 'w' || k === 'l' || k === 'k' || k === 'h' || k === 'b') { e.preventDefault(); window.chrome.webview.postMessage(k); }" +
-        "}, true);";
+        " const k = e.key, lk = k.toLowerCase(); let m = null;" +
+        " if (e.ctrlKey && !e.altKey) {" +
+        "  if (!e.shiftKey && lk.length === 1 && 'twlkhb'.includes(lk)) m = lk;" +
+        "  else if (k === 'Tab') m = e.shiftKey ? 'p' : 'n';" +
+        "  else if (!e.shiftKey && k === 'PageDown') m = 'n';" +
+        "  else if (!e.shiftKey && k === 'PageUp') m = 'p';" +
+        "  else if (!e.shiftKey && k === 'F4') m = 'w';" +
+        "  else if (!e.shiftKey && k.length === 1 && k >= '1' && k <= '9') m = k;" +
+        "  else if (e.shiftKey && lk === 't') m = 'z';" +
+        " } else if (!e.ctrlKey && !e.shiftKey && !e.altKey && k === 'F6') m = 'l';" +
+        " else if (e.altKey && !e.ctrlKey && !e.shiftKey && lk === 'd') m = 'l';" +
+        " if (m) { e.preventDefault(); window.chrome.webview.postMessage(m); }" +
+        "}, true);" +
+        // Ctrl-click or middle-click on a link: tell the app, so the tab it opens stays in the background.
+        "const bgLink = e => {" +
+        " if (window !== window.top) return;" +
+        " if (!(e.button === 1 || (e.button === 0 && (e.ctrlKey || e.metaKey)))) return;" +
+        " if (e.target && e.target.closest && e.target.closest('a[href]')) window.chrome.webview.postMessage('o');" +
+        "};" +
+        "window.addEventListener('click', bgLink, true); window.addEventListener('auxclick', bgLink, true);";
+
+    DateTime _openInBackgroundUntil = DateTime.MinValue;
+
+    // Right-click menu: "Open link in new tab" on a link, and a search for the selected text in a new tab.
+    void AddContextMenuItems(Profile p, CoreWebView2 web, CoreWebView2ContextMenuRequestedEventArgs args)
+    {
+        try
+        {
+            var target = args.ContextMenuTarget;
+            var items = args.MenuItems;
+            var at = 0;
+            if (target.HasLinkUri && Uri.TryCreate(target.LinkUri, UriKind.Absolute, out var link) &&
+                (link.Scheme == Uri.UriSchemeHttp || link.Scheme == Uri.UriSchemeHttps))
+            {
+                var item = web.Environment.CreateContextMenuItem("Open link in new tab", null, CoreWebView2ContextMenuItemKind.Command);
+                item.CustomItemSelected += (_, _) => Dispatcher.InvokeAsync(() => OpenInNewTabAsync(p, link.AbsoluteUri));
+                items.Insert(at++, item);
+            }
+            if (target.HasSelection && (target.SelectionText ?? "").Trim() is { Length: > 0 } selected)
+            {
+                var engine = SearchEngines.Get(SearchEngines.Effective(p.SearchEngine, _settings.SearchEngine));
+                var shown = selected.Length > 30 ? selected[..30] + "..." : selected;
+                var item = web.Environment.CreateContextMenuItem($"Search {engine.Name} for \"{shown}\"", null, CoreWebView2ContextMenuItemKind.Command);
+                item.CustomItemSelected += (_, _) => Dispatcher.InvokeAsync(() => OpenInNewTabAsync(p, engine.UrlFor(selected)));
+                items.Insert(at++, item);
+            }
+        }
+        catch (Exception ex) { CrashLog.Write("context menu", ex); }
+    }
+
+    async Task OpenInNewTabAsync(Profile p, string url)
+    {
+        if (_current != p) return;
+        await NewTabAsync(p, url);
+    }
 
     bool HandleShortcut(char key)
     {
@@ -1502,8 +1660,44 @@ RefreshView();
             case 'k': OpenSwitcher(); return true;
             case 'b': ToggleSidebar(); return true;
             case 'h': _ = ShowHistoryAsync(_current); return true;
+            case 'r': ActiveWeb?.Reload(); return true;
+            case '<': if (ActiveWeb is { CanGoBack: true } back) back.GoBack(); return true;
+            case '>': if (ActiveWeb is { CanGoForward: true } forward) forward.GoForward(); return true;
+            case 'z': _ = ReopenClosedTabAsync(); return true;
+            case 'n' or 'p' or (>= '1' and <= '9'): GoToTab(key); return true;
             default: return false;
         }
+    }
+
+    void GoToTab(char action)
+    {
+        if (_current is not { } p || p.Tabs.Count == 0) return;
+        var at = TabShortcuts.TabFor(action, p.Tabs.Count, ActiveTab == null ? -1 : p.Tabs.IndexOf(ActiveTab));
+        if (at is { } i && p.Tabs[i] != ActiveTab) SelectTab(p.Tabs[i]);
+    }
+
+    // ---- reopen closed tab (Ctrl+Shift+T) --------------------------------------------------
+
+    // The last tabs closed in each profile, newest last. Kept per profile, so Ctrl+Shift+T never brings back a page
+    // from another client's profile, and only in memory (not saved).
+    readonly Dictionary<string, List<(string Url, string Title)>> _closedTabs = new();
+    const int MaxClosedTabs = 10;
+
+    void RememberClosedTab(Profile p, BrowserTab tab)
+    {
+        var url = CurrentUrl(tab);
+        if (string.IsNullOrEmpty(url) || url == "about:blank") return;
+        if (!_closedTabs.TryGetValue(p.Id, out var list)) _closedTabs[p.Id] = list = new();
+        list.Add((url, tab.Title));
+        if (list.Count > MaxClosedTabs) list.RemoveAt(0);
+    }
+
+    async Task ReopenClosedTabAsync()
+    {
+        if (_current is not { } p || !_closedTabs.TryGetValue(p.Id, out var list) || list.Count == 0) return;
+        var (url, _) = list[^1];
+        list.RemoveAt(list.Count - 1);
+        await NewTabAsync(p, url);
     }
 
     void Window_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -1514,8 +1708,7 @@ RefreshView();
             e.Handled = true;
             return;
         }
-        if ((Keyboard.Modifiers & ModifierKeys.Control) == 0) return;
-        var key = e.Key switch { Key.T => 't', Key.W => 'w', Key.L => 'l', Key.K => 'k', Key.H => 'h', Key.B => 'b', _ => '\0' };
-        if (key != '\0' && HandleShortcut(key)) e.Handled = true;
+        var pressed = e.Key == Key.System ? e.SystemKey : e.Key;   // Alt combinations arrive as a "system" key
+        if (TabShortcuts.FromKey(pressed, Keyboard.Modifiers) is { } action && HandleShortcut(action)) e.Handled = true;
     }
 }
